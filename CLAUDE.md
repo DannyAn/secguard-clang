@@ -102,6 +102,8 @@ secguard metrics         Show scan performance/convergence metrics (latest scan)
 secguard query <skill>   Run a skill query
 secguard plan <vuln>     Run convergence for one vulnerability type
 secguard report          Output all findings as JSON
+secguard finalize <scan_id>  Replay staged verdicts, settle types, and regenerate
+                         result.sarif/findings/report.md from an interrupted scan
 secguard types           List all vulnerability types + CWE (JSON)
 secguard schema [table]  Show a table's schema (columns/types)
 secguard db <sql>        Execute a SQL query, return JSON

@@ -124,6 +124,8 @@ func Execute(ctx context.Context, args []string) int {
 		return runPlanCmd(ctx, args[1:])
 	case "report":
 		return runReportCmd(ctx, args[1:])
+	case "finalize":
+		return runFinalizeCmd(ctx, args[1:])
 	case "classify":
 		return runClassifyCmd(ctx, args[1:])
 	case "db":
@@ -135,7 +137,7 @@ func Execute(ctx context.Context, args []string) int {
 	case "config":
 		return runConfigCmd(args[1:])
 	default:
-		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, classify, db, def, schema, config", args[0]))
+		WriteErrorJSON(fmt.Sprintf("unknown command %q; available: index, scan, diff, pr, mr, status, metrics, query, types, plan, report, finalize, classify, db, def, schema, config", args[0]))
 		return 1
 	}
 }
@@ -156,6 +158,9 @@ Usage:
   secguard types           List all vulnerability types + CWE (JSON)
   secguard plan <vuln>     Run convergence pipeline for a vulnerability type
   secguard report          Output all findings as JSON
+  secguard finalize <scan_id>  Replay staged verdicts, settle types, and regenerate
+                           result.sarif/findings/report.md from an interrupted scan
+                           (run in an ordinary terminal after the host session dies)
   secguard classify <path> Classify candidates deterministically (--mode executor|agent, --dry-run, --batch-size N)
   secguard db <sql>        Execute SQL query on sgre.db, return JSON
   secguard def <symbol>    Resolve a function/macro/type definition from the index
