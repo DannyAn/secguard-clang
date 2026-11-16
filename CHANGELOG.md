@@ -15,7 +15,7 @@
 - 泄漏检测识别业务命名的释放助手（`*_free`/`*_release`/`*_destroy` 等）为 leak-free，消除 M1 残留误报；窄化 FP 削减（M2/M3/M6）。
 - 新增 `needs_more_evidence` 终审裁决：复核无法判定时保留首轮机器裁决并导出 SARIF 标记，不再「判不了就当驳回」。
 - race-condition 互斥锁配对改为按 CFG hold 而非行号区间（#282 F8），消除跨行配对误报。
-- 新增 `secguard finalize <scan_id>`：主机故障/中断后回放已暂存裁决、结算类型、重新生成 result.sarif/findings/report.md。
+- 新增 `secguard finalize <scan_id>`：主机故障/中断后回放已暂存裁决、结算类型、重新生成 result.sarif/findings/report.md；并暴露为 OpenCode/OpenCode-NGA 的 `secguard_finalize` MCP 工具（`needs_more_evidence` 终审裁决同步进 `secguard_review` 工具文档）。
 
 ### 扫描会话 round-1 检视修复
 
