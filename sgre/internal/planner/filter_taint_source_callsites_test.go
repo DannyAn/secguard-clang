@@ -325,3 +325,52 @@ int main(void) {
 		t.Fatalf("show (the array element is reassigned in-tree) should be kept, got %v", candidateNames(result))
 	}
 }
+
+// TestCallsiteCensus_ConstStringArrayNonLiteralElementKept locks in the §6.2
+// reverse sample: a file-scope char-pointer array whose initializer contains a
+// NON-literal element (here getenv) is not a compile-time template table, so a
+// subscript of it must stay VARIABLE and the candidate must be KEPT — the
+// all-literal gate must never drop a genuinely attacker-reachable format.
+func TestCallsiteCensus_ConstStringArrayNonLiteralElementKept(t *testing.T) {
+	src := `#include <stdio.h>
+#include <stdlib.h>
+
+static const char *FMT[2] = {"a", getenv("ATTACKER")};
+
+void show(const char *fmt) {
+    printf(fmt);
+}
+
+int main(void) {
+    show(FMT[0]);
+    return 0;
+}
+`
+	result := setupCallsiteFixture(t, src, "format-string")
+	if _, ok := candidatesByFunc(result)["show"]; !ok {
+		t.Fatalf("show (the array has a non-literal initializer element) should be kept, got %v", candidateNames(result))
+	}
+}
+
+// TestCallsiteCensus_ConstStringArrayRuntimeIndexDropped locks in the "any index"
+// semantics: a subscript of an ALL-literal static-const array is a pointer to a
+// string literal even under a runtime index, so the wrapper is dropped.
+func TestCallsiteCensus_ConstStringArrayRuntimeIndexDropped(t *testing.T) {
+	src := `#include <stdio.h>
+
+static const char *PATH_TMPL[2] = {"prefix/%s", "suffix/%s"};
+
+void pull(const char *fmt) {
+    printf(fmt);
+}
+
+int pick(int i) {
+    pull(PATH_TMPL[i & 1]);
+    return 0;
+}
+`
+	result := setupCallsiteFixture(t, src, "format-string")
+	if _, ok := candidatesByFunc(result)["pull"]; ok {
+		t.Errorf("pull (subscript of an all-literal static-const array) should be dropped, got %v", candidateNames(result))
+	}
+}
