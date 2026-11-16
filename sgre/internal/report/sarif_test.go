@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -424,5 +425,69 @@ func TestSarifConfirmationSourceAuto(t *testing.T) {
 	}
 	if got := results[0].Properties["confirmation_source"]; got != "auto" {
 		t.Errorf("properties.confirmation_source = %q, want auto", got)
+	}
+}
+
+// result.sarif is a machine-consumed JSON field, so a fix_strategy the AI wrote
+// as Markdown (bold subsection headers) must be rendered as plain text there:
+// bold markers are stripped, while backtick code spans and the identifiers /
+// pointers inside them are preserved.
+func TestWriteSarifFromFindings_StripsMarkdownFromFixStrategy(t *testing.T) {
+	dir := t.TempDir()
+	sarifPath := filepath.Join(dir, "result.sarif")
+
+	const raw = "**Recommended Fix** — In ddos_cfg_udp_sess_rlt_sess_get_para, guard `if (cfg->ipNum >= <node dimension, 4>) return DDOS_ERR;` before the IPV4VAL/IPV6VAL/mask branches.\n" +
+		"**Required Conditions** — Bound must equal the declared size of DDoSUdpSessRltCfg.node; confirm from the struct definition.\n" +
+		"**Implementation Guidance** — keep sess_set_add (line 476 loop) consistent; dereference `char **argv` only after a NULL check.\n" +
+		"**Validation** — re-scan confirms the site clean."
+
+	findings := []*db.Finding{{
+		RuleID: "CWE-119", Severity: "high", Confidence: 1.0,
+		Status: "confirmed", FilePath: "src/a.c", LineNumber: 5, FunctionName: "f",
+		Summary: "OOB", FixStrategy: raw,
+	}}
+	if err := WriteSarifFromFindings(sarifPath, "", findings); err != nil {
+		t.Fatalf("WriteSarifFromFindings: %v", err)
+	}
+	data, err := os.ReadFile(sarifPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep sarifReport
+	if err := json.Unmarshal(data, &rep); err != nil {
+		t.Fatal(err)
+	}
+	got := rep.Runs[0].Results[0].Properties["fix_strategy"].(string)
+	if strings.Contains(got, "**Recommended Fix**") || strings.Contains(got, "**Validation**") {
+		t.Errorf("fix_strategy still carries bold subsection headers: %q", got)
+	}
+	if !strings.Contains(got, "Recommended Fix —") {
+		t.Errorf("fix_strategy lost its header text: %q", got)
+	}
+	if !strings.Contains(got, "sess_set_add") {
+		t.Errorf("fix_strategy corrupted an underscore identifier: %q", got)
+	}
+	if !strings.Contains(got, "`char **argv`") {
+		t.Errorf("fix_strategy corrupted a backtick code span with a double pointer: %q", got)
+	}
+}
+
+func TestStripMarkdownEmphasis(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"**Recommended Fix** — guard the dereference.", "Recommended Fix — guard the dereference."},
+		{"__Required Conditions__ — capacity obtainable.", "Required Conditions — capacity obtainable."},
+		{"guard `if (*p == NULL) return;` before use.", "guard `if (*p == NULL) return;` before use."},
+		{"dereference `char **argv` only after a NULL check.", "dereference `char **argv` only after a NULL check."},
+		{"keep sess_set_add consistent.", "keep sess_set_add consistent."},
+		{"check *p for NULL.", "check *p for NULL."},
+		{"no emphasis here.", "no emphasis here."},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := stripMarkdownEmphasis(c.in); got != c.want {
+			t.Errorf("stripMarkdownEmphasis(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
