@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/symbols"
@@ -1036,6 +1037,15 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 	}
 	for _, ln := range []int{c.SourceLine, c.DeclLine, c.FreeLine, c.FirstFree, c.SecondFree, c.UseLine, c.WriteLine} {
 		if ln > 0 {
+			item.SourceLines = append(item.SourceLines, ln)
+		}
+	}
+	// Memory-leak release sites live in a comma-joined string (LeakFreeLines),
+	// not an int field; widen the Code Context to cover them so a tail free (or
+	// an indirect release through a business-named helper) is checkable in view
+	// instead of only trusted as a free@N hint token (issue #281 M1 residual).
+	for _, s := range strings.Split(c.LeakFreeLines, ",") {
+		if ln, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && ln > 0 {
 			item.SourceLines = append(item.SourceLines, ln)
 		}
 	}
