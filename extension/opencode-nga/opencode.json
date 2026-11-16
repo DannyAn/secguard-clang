@@ -38,7 +38,8 @@
     "secguard_schema": "allow",
     "secguard_types": "allow",
     "secguard_metrics": "allow",
-    "secguard_def": "allow"
+    "secguard_def": "allow",
+    "secguard_finalize": "allow"
   },
   "plugin": ["secguard-context"]
 }

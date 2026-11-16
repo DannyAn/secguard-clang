@@ -21,7 +21,7 @@ async function withKill(proc: { text(): Promise<string>, kill(): void }, ms: num
 
 export default tool({
   description:
-    "Write re-review verdicts for the machine auto-confirmed findings (Step 5.5 of command-instructions.md): reviews=[...] maps to `report --review-json` in ONE idempotent batch. review_status 'dismissed' suppresses a machine false positive from result.sarif; 'confirmed' agrees. There is NO completeness gate and NO per-candidate loop — Step 5.5 is bounded and optional. With no reviews, the tool lists the unreviewed machine findings (status='auto-confirmed' with review_status NULL, i.e. exactly the rows Step 5.5 must judge) via `report --list-auto-confirmed`.",
+    "Write re-review verdicts for the machine auto-confirmed findings (Step 5.5 of command-instructions.md): reviews=[...] maps to `report --review-json` in ONE idempotent batch. review_status 'dismissed' suppresses a machine false positive from result.sarif; 'confirmed' agrees; 'needs_more_evidence' keeps the first-pass machine verdict and exports a SARIF marker when the decisive fact is neither in the row nor readable within the step's source budget (it is NOT a dismissal and NOT a fresh confirmation — use it only after spending the row + source budget). There is NO completeness gate and NO per-candidate loop — Step 5.5 is bounded and optional. With no reviews, the tool lists the unreviewed machine findings (status='auto-confirmed' with review_status NULL, i.e. exactly the rows Step 5.5 must judge) via `report --list-auto-confirmed`.",
   args: {
     scan_id: tool.schema
       .string()
@@ -45,7 +45,7 @@ export default tool({
           id: tool.schema.number().describe("Finding id from the Step 5.5 listing (secguard_db raw SQL: SELECT id ... WHERE status='auto-confirmed')"),
           review_status: tool.schema
             .string()
-            .describe("confirmed (agree) | dismissed (machine false positive)"),
+            .describe("confirmed (agree) | dismissed (machine false positive) | needs_more_evidence (inconclusive — keeps the machine verdict and marks the row; not a dismissal, not a fresh confirmation)"),
           review_reasoning: tool.schema
             .string()
             .describe("Cited evidence: the snippet/source line + why it is safe / a false positive"),

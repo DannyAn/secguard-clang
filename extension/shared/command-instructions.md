@@ -526,6 +526,7 @@ the type/range is confirmed, still call `--write-json` with the array of
 4. 对 `written_count == 0` 且无 settlement 的 type → 子代理被杀前未写任何数据，**立即重派**（先 F13 claim，`claimed:false` reason `stale` 则接管；reason `held` 但 `age_ms > 600000`（10 min）且无 heartbeat 增长 → 用 `--reclaim` 强制接管）。
 5. 对 `0 < written_count < candidate_count` 且无 settlement 的 type → 子代理被杀前写了部分数据，**只重派缺失 range**（`candidate_count - written_count - dismissed_count` 个候选）。
 6. **禁止**等 claim TTL 30 min——中断后子代理大概率已死，用 `written_count` 两次查询（间隔 >30s）无增长作为 dead 判据，不用 claim TTL。
+7. **终态产物缺失/过期时用 `secguard finalize <scan_id>`（OpenCode 用 `secguard_finalize` 工具）一键兜底**：若 DB 里各类型已 `terminal_state=done`（或 staged verdict JSON 已写满 `.sgre/.tmp/` 但会话在 Collect+finalize 前死了），只是终端产物（`result.sarif` / `findings/` / `report.md`）没生成或过期，**不要手工重跑 audit**——`secguard finalize` 幂等地重放 staged verdict、逐个 `--complete-type`、重跑一次 `--audit` 并自检 `result.sarif` 非空。返回 `status: ok|partial|failed`；`failed`（result.sarif 未产出）说明裁决数据不完整，回到第 1 步查 `written_count`，不要盲扫。**它是编排器的单写者收尾命令，子代理绝不能调用**（和 `--audit`/`--complete-type` 同级）。
 
 **派发前落点检查 (F11a)：** 任何派发之前先跑 `secguard status --reports --scan-id <scan_id>`，跳过已被 `valid:true` 报告覆盖的 type/range；再跑 `secguard status --per-type --scan-id <scan_id>`，跳过 `already_covered_ranges`（已完成）与 `in_flight_ranges`（有活 claim）里的 range。然后对剩余每个批次按 F13 claim，只有 `claimed:true` 才派发。这样超时后的 re-plan 是幂等的，重复派发一个已完成或已在跑的批次是纯重复劳动。
 

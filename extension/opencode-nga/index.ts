@@ -14,6 +14,7 @@ import secguard_def from "./tools/secguard_def"
 import secguard_schema from "./tools/secguard_schema"
 import secguard_types from "./tools/secguard_types"
 import secguard_metrics from "./tools/secguard_metrics"
+import secguard_finalize from "./tools/secguard_finalize"
 
 export default {
   id: "secguard-clang",
@@ -30,6 +31,7 @@ export default {
       secguard_schema,
       secguard_types,
       secguard_metrics,
+      secguard_finalize,
     },
   }),
 }

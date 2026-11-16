@@ -18,6 +18,7 @@ import secguard_def from "../tools/secguard_def"
 import secguard_schema from "../tools/secguard_schema"
 import secguard_types from "../tools/secguard_types"
 import secguard_metrics from "../tools/secguard_metrics"
+import secguard_finalize from "../tools/secguard_finalize"
 
 // KEEP IN SYNC with opencode/index.ts — the two OpenCode hosts share this
 // context-enhancement logic (resolveWorkDir + tool.execute.before + file.edited
@@ -46,6 +47,7 @@ export const SecGuardContextPlugin: Plugin = async ({
       secguard_schema,
       secguard_types,
       secguard_metrics,
+      secguard_finalize,
     },
 
     "tool.execute.before": async (input, output) => {
