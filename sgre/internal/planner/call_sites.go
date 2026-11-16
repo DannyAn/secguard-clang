@@ -2,7 +2,10 @@ package planner
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -22,6 +25,8 @@ type callSiteResolver struct {
 
 type callSite struct {
 	fileID int64
+	path   string
+	line   int
 	args   []string
 }
 
@@ -47,7 +52,7 @@ func newCallSiteResolver(ctx context.Context, store db.Store, p *parser.Parser) 
 				for _, a := range args {
 					texts = append(texts, a.Text())
 				}
-				r.callsByName[name] = append(r.callsByName[name], callSite{fileID: file.ID, args: texts})
+				r.callsByName[name] = append(r.callsByName[name], callSite{fileID: file.ID, path: file.Path, line: call.StartLine(), args: texts})
 			}
 		}); err != nil {
 			continue
@@ -108,4 +113,28 @@ func (r *callSiteResolver) paramSummary(name string, fileID int64, index int, st
 		}
 	}
 	return sites, nonZero
+}
+
+// sitesList returns the direct call-site locations ("<basename>:<line>") of a
+// function, sorted and de-duplicated. It is the raw caller-side evidence for a
+// cross-function judgment (M3): a guard the caller applies before the call
+// (`if (p->len > off) x = f(p, off)`) is only visible at these sites, so the
+// classifier must inspect them rather than re-deriving the call graph. An empty
+// list means no in-tree direct call site binds the function.
+func (r *callSiteResolver) sitesList(name string, fileID int64, static bool) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, site := range r.callsByName[name] {
+		if static && site.fileID != fileID {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d", filepath.Base(site.path), site.line)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }

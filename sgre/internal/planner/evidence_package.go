@@ -158,6 +158,11 @@ type EvidenceItem struct {
 	// engine had no fact worth reporting.
 	DivisorInterval string `json:"divisor_interval,omitempty"`
 	DivisorCallers  string `json:"divisor_callers,omitempty"`
+	// SubCallers is the direct call-site census ("file.c:42, file.c:87") for an
+	// unsigned_sub_underflow candidate — the sites whose caller-side precondition
+	// guard can make the subtraction unreachable. Empty = no in-tree direct call
+	// site binds the function.
+	SubCallers string `json:"sub_callers,omitempty"`
 	// CallChain is the concrete entry → … → this function call path (caller /
 	// callee per hop + call site line), rendered as the call_path fragment when
 	// present.
@@ -760,6 +765,9 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				if c.CalleeDefFile != "" {
 					parts = append(parts, fmt.Sprintf("callee@%s:%d", filepath.Base(c.CalleeDefFile), c.CalleeDefLine))
 				}
+				if c.SubCallers != "" {
+					parts = append(parts, "callers@"+c.SubCallers)
+				}
 				parts = append(parts, "guard@none")
 			}
 			// GAP-06 shift UB: the count-vs-width fact (shift_count@) and the
@@ -1013,6 +1021,7 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 
 		DivisorInterval: c.DivisorInterval,
 		DivisorCallers:  c.DivisorCallers,
+		SubCallers:      c.SubCallers,
 
 		CallsiteSites:       c.CallsiteSites,
 		CalleeNullCondition: c.CalleeNullCondition,

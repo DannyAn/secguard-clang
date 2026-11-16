@@ -274,3 +274,54 @@ int open_tail(void) {
 		t.Errorf("open_tail (fopen(strrchr(path,'/') + 1)) should be dropped by the sanitize kill, got %v", candidateNames(result))
 	}
 }
+
+// TestCallsiteCensus_ConstStringArrayDropped locks in M2: a file-scope
+// `static const char *PATH_TMPL[N] = {"...", "..."}` subscripted by ANY index is
+// a pointer to a string literal, so a wrapper whose every caller passes such an
+// element is all-literal and must be dropped (the format-string critical FP
+// where a compile-time template table was counted as a variable).
+func TestCallsiteCensus_ConstStringArrayDropped(t *testing.T) {
+	src := `#include <stdio.h>
+
+static const char *PATH_TMPL[2] = {"prefix/%s", "suffix/%s"};
+
+void pull(const char *fmt) {
+    printf(fmt);
+}
+
+int main(void) {
+    pull(PATH_TMPL[0]);
+    pull(PATH_TMPL[1]);
+    return 0;
+}
+`
+	result := setupCallsiteFixture(t, src, "format-string")
+	if _, ok := candidatesByFunc(result)["pull"]; ok {
+		t.Errorf("pull (all callers pass a static-const-array element) should be dropped, got %v", candidateNames(result))
+	}
+}
+
+// TestCallsiteCensus_ConstStringArrayWrittenKept locks in the write guard: the
+// same array, when its element pointer is reassigned anywhere in the TU, is no
+// longer provably constant, so the candidate must be KEPT (no false negative).
+func TestCallsiteCensus_ConstStringArrayWrittenKept(t *testing.T) {
+	src := `#include <stdio.h>
+#include <stdlib.h>
+
+static const char *FMT[2] = {"a", "b"};
+
+void show(const char *fmt) {
+    printf(fmt);
+}
+
+int main(void) {
+    FMT[0] = getenv("ATTACKER");
+    show(FMT[0]);
+    return 0;
+}
+`
+	result := setupCallsiteFixture(t, src, "format-string")
+	if _, ok := candidatesByFunc(result)["show"]; !ok {
+		t.Fatalf("show (the array element is reassigned in-tree) should be kept, got %v", candidateNames(result))
+	}
+}

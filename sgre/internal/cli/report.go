@@ -1087,9 +1087,9 @@ func runReportCmd(ctx context.Context, args []string) int {
 		reviewStatus := parseStringFlag(remaining, "review-status")
 		reviewReasoning := parseStringFlag(remaining, "review-reasoning")
 		switch reviewStatus {
-		case "confirmed", "dismissed":
+		case "confirmed", "dismissed", "needs_more_evidence":
 		default:
-			WriteErrorJSON(fmt.Sprintf("invalid --review-status %q (expected confirmed|dismissed)", reviewStatus))
+			WriteErrorJSON(fmt.Sprintf("invalid --review-status %q (expected confirmed|dismissed|needs_more_evidence)", reviewStatus))
 			return 1
 		}
 
@@ -1108,10 +1108,12 @@ func runReportCmd(ctx context.Context, args []string) int {
 		// Re-send the structured content the first pass persisted, so the A5
 		// review updates the verdict without wiping Summary/Reasoning/Fix
 		// Strategy — and so a dismissal removes the file from findings/ rather
-		// than leaving a confirmed-looking file behind.
+		// than leaving a confirmed-looking file behind. Record the review on
+		// ReviewStatus (not Status) so needs_more_evidence keeps the first-pass
+		// status via EffectiveStatus (conservative: an inconclusive review never
+		// drops a potential real defect).
 		reviewed := *f
-		reviewed.Status = finalStatus
-		reviewed.ReviewStatus = ""
+		reviewed.ReviewStatus = finalStatus
 		oc := syncPerFindingAfterWrite(remaining, &reviewed)
 
 		out := map[string]interface{}{
@@ -1191,16 +1193,16 @@ func runReportCmd(ctx context.Context, args []string) int {
 				// reporting a bare `invalid review_status ""` — the caller
 				// otherwise cannot tell a typo'd key from an invalid value.
 				if in.ID == 0 {
-					errs = append(errs, fmt.Sprintf("entry %d: missing required field \"id\" (expected {\"id\": <finding id>, \"review_status\": \"confirmed\"|\"dismissed\"})", i))
+					errs = append(errs, fmt.Sprintf("entry %d: missing required field \"id\" (expected {\"id\": <finding id>, \"review_status\": \"confirmed\"|\"dismissed\"|\"needs_more_evidence\"})", i))
 					continue
 				}
 				switch in.ReviewStatus {
-				case "confirmed", "dismissed":
+				case "confirmed", "dismissed", "needs_more_evidence":
 				default:
 					if in.ReviewStatus == "" {
-						errs = append(errs, fmt.Sprintf("entry %d (finding %d): missing required field \"review_status\" (expected \"confirmed\" or \"dismissed\"; a misspelled key decodes as empty)", i, in.ID))
+						errs = append(errs, fmt.Sprintf("entry %d (finding %d): missing required field \"review_status\" (expected \"confirmed\", \"dismissed\", or \"needs_more_evidence\"; a misspelled key decodes as empty)", i, in.ID))
 					} else {
-						errs = append(errs, fmt.Sprintf("entry %d (finding %d): invalid review_status %q (expected \"confirmed\" or \"dismissed\")", i, in.ID, in.ReviewStatus))
+						errs = append(errs, fmt.Sprintf("entry %d (finding %d): invalid review_status %q (expected \"confirmed\", \"dismissed\", or \"needs_more_evidence\")", i, in.ID, in.ReviewStatus))
 					}
 					continue
 				}
@@ -1236,8 +1238,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				continue
 			}
 			rev := *f
-			rev.Status = in.ReviewStatus
-			rev.ReviewStatus = ""
+			rev.ReviewStatus = in.ReviewStatus
 			if oc := syncPerFindingAfterWrite(remaining, &rev); oc.Warning != "" {
 				fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
 			}

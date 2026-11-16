@@ -101,7 +101,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- divide-by-zero ----
 	{Key: "divisor@", Display: "divisor@<shape>", Description: "the divisor's shape: {value} (`bare` = plain identifier, `call` = call result, `compound` = complex expression, `field`/`global` = struct member / module global). EVERY shape — including `bare` and `field` — requires the ±8-line Code Context before confirming: the pipeline already dropped the divisors it could prove non-zero, so a guard the model cannot see (a disjunctive `if (x == 0 || y == 0) return;`, a helper predicate) is exactly what the window shows"},
 	{Key: "range@", Display: "range@[lo,hi]", Description: "the range engine's provable interval for the divisor: {value} — it contains 0 (else the filter would have dropped the row); judge whether the 0 endpoint is reachable"},
-	{Key: "callers@", Display: "callers@<summary>", Description: "the direct call-site census for a parameter divisor: {value} — judge the callers that pass non-constants"},
+	{Key: "callers@", Display: "callers@<summary>", Description: "the direct call-site census for the candidate's function: {value} — for a parameter divisor these are the callers to check for a 0 argument; for an integer-overflow subtraction these are the sites whose caller-side guard (e.g. `if (p->len > off) return;` before the call) can make the underflow unreachable — enumerate EACH site and judge its guard before confirming"},
 	{Key: "dividend@", Display: "dividend@INT_MIN", Description: "int_min_div: the dividend is provably INT_MIN ({value}) — a 32-bit signed INT_MIN divided by -1 is a certain CWE-190 signed overflow (INT_MIN / -1 overflows to INT_MIN)"},
 
 	// ---- uninit ----

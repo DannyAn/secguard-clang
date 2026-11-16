@@ -72,6 +72,12 @@ func (f *UnsignedSubGuardFilter) Apply(ctx context.Context, candidates []Candida
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed
+	// M3: a caller-side precondition guard (`if (p->len > off) return;` before
+	// the call) can make the subtraction unreachable, and that guard is visible
+	// ONLY at the direct call sites. Resolve them once and attach the census to
+	// every surviving candidate so the classifier enumerates the callers instead
+	// of judging the subtraction in isolation.
+	sites := newCallSiteResolver(ctx, f.store, f.parser)
 	for _, c := range candidates {
 		if c.Category != "unsigned_sub_underflow" {
 			kept = append(kept, c)
@@ -91,6 +97,11 @@ func (f *UnsignedSubGuardFilter) Apply(ctx context.Context, candidates []Candida
 			dropped = dismiss(dropped, c, f.Name(),
 				"unsigned subtraction is protected by a preceding `consumed <= total` early-return guard")
 			continue
+		}
+		if fn := fnByID[c.FunctionID]; fn != nil {
+			if list := sites.sitesList(fn.Name, fn.FileID, fn.IsStatic); len(list) > 0 {
+				c.SubCallers = strings.Join(list, ",")
+			}
 		}
 		kept = append(kept, c)
 	}

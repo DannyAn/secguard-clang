@@ -54,6 +54,9 @@ func init() {
 			if c.SubLHSInfluenced {
 				frags = append(frags, EvidenceFragment{Type: "operand_influenced", Role: "source", Detail: "left operand is caller/attacker-controlled"})
 			}
+			if c.SubCallers != "" {
+				frags = append(frags, EvidenceFragment{Type: "call_sites", Role: "condition", Detail: fmt.Sprintf("direct call sites: %s — a caller-side guard before any of these can make the subtraction unreachable", c.SubCallers)})
+			}
 			frags = append(frags, EvidenceFragment{Type: "call_path", Role: "path", Detail: fmt.Sprintf("function %s is reachable from entry", c.FunctionName)})
 			return frags
 		},
@@ -120,6 +123,12 @@ func buildIntegerOverflowVerdictFacts(c Candidate) []VerdictFact {
 		facts = append(facts, VerdictFact{
 			Token:  "sink@" + c.SubSink,
 			Detail: "sink shape: " + c.SubSink + " (call_arg = passed into an allocation / copy call, assign = stored into a variable)",
+		})
+	}
+	if c.SubCallers != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "callers@" + c.SubCallers,
+			Detail: "the function's direct call sites — a caller-side precondition guard (e.g. `if (p->len > off) return;` before the call) can make the subtraction unreachable; enumerate EACH site and judge its guard before confirming",
 		})
 	}
 	return facts
