@@ -4,6 +4,28 @@
 
 ## [未发布]
 
+## [0.12.9] - 2026-11-16
+
+### Issue #278 / #279 / #280 — SARIF fix_strategy 文本与 scan_id 校验
+
+- `result.sarif` 的 `fix_strategy` 剥离 Markdown 强调符号，避免格式化噪声写进交付物；`report --audit` 对未知 `scan_id` 显式拒绝而非静默产出空报告。
+
+### Issue #281 / #282 / #283 — 生产误报削减 + 扫描韧性
+
+- 泄漏检测识别业务命名的释放助手（`*_free`/`*_release`/`*_destroy` 等）为 leak-free，消除 M1 残留误报；窄化 FP 削减（M2/M3/M6）。
+- 新增 `needs_more_evidence` 终审裁决：复核无法判定时保留首轮机器裁决并导出 SARIF 标记，不再「判不了就当驳回」。
+- race-condition 互斥锁配对改为按 CFG hold 而非行号区间（#282 F8），消除跨行配对误报。
+- 新增 `secguard finalize <scan_id>`：主机故障/中断后回放已暂存裁决、结算类型、重新生成 result.sarif/findings/report.md。
+
+### 扫描会话 round-1 检视修复
+
+- `status --per-type`：`uncovered_ranges` 在裁决台账完整（`remaining == 0`）时读空，修复「台账已清零却报整段未覆盖」的自相矛盾（OpenCode 子代理不落 settlement 文件时的重派误判）。
+- AI 阶段计时：`complete-type` 结算时记录 `finished_at`，`measureAIStageTiming` 在无 queue/work 拆分时用 claim→complete 跨度，修复自测耗时系统性低估；`ai_stage.batches` 更名 `settled_ranges`（澄清其为结算 range 数而非子代理派发数）。
+- auto-confirm 推理文本：`int_min_div`（`INT_MIN / -1` 有符号溢出）不再误写为 "division by zero"；容量未知不再渲染为 "capacity: 0 elements"。
+- `report --list-auto-confirmed` 每行新增 `vuln_type`，消除 Step 5.5 复核对多 CWE 类型的手工 CWE→类型反推。
+- hardcoded-secret 新增「patterned body（重复/连续序列）即便前缀像真密钥也驳回」精度边界；integer-overflow SKILL 补 `call_sites` 证据片段（修复一致性测试）。
+- Output Format 新增 `confirmed_total > 40` 时问题表按 Skill 收敛的规则。
+
 ## [0.12.8] - 2026-11-14
 
 ### Issue #269 / #271 — 确认误报削减（buffer-overflow / switch-fallthrough）
