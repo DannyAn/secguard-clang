@@ -1364,6 +1364,16 @@ func runReportCmd(ctx context.Context, args []string) int {
 			return 1
 		}
 
+		// Fail an unknown scan_id before any artifact (or settlement absorption)
+		// runs: a typo'd id must not mint a full set of empty, vuln_count=0
+		// artifacts that read as a clean scan. The error names the closest known
+		// scan id, so an orchestrator's single-character transcription error is
+		// caught here instead of silently faking a completed audit.
+		if verr := validateAuditScanID(ctx, store, scanID); verr != nil {
+			WriteErrorJSON(verr.Error())
+			return 1
+		}
+
 		// The AI-stage timing and the covered/in-flight ledger are derived from the
 		// settlement reports the subagents write into .sgre/.tmp. The command
 		// contract's happy path is `report --complete-type` + `report --audit`; it
