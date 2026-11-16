@@ -102,6 +102,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 		updates := root.FindAll("update_expression")
 		ids := root.FindAll("identifier")
 		funcDefs := root.FindAll("function_definition")
+		bodies := functionBodyMap(funcDefs)
 
 		for _, f := range funcs {
 			for _, ifStmt := range ifs {
@@ -144,7 +145,7 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 				}
 			}
 
-			d.detectLockUnlockPattern(ctx, calls, assigns, f, file, lockWrappers, unlockWrappers, &result)
+			d.detectLockUnlockPattern(ctx, calls, assigns, bodies[f.StartLine], f, file, lockWrappers, unlockWrappers, tree, &result)
 		}
 
 		// Cross-function data race: aggregate every thread function's accesses
@@ -683,7 +684,7 @@ func (d *RaceConditionDetector) findCheckCall(cond parser.Node) *parser.Node {
 	return nil
 }
 
-func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, calls, assigns []parser.Node, f *db.Function, file *db.File, lockWrappers, unlockWrappers map[string]string, result *DetectResult) {
+func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, calls, assigns []parser.Node, body parser.Node, f *db.Function, file *db.File, lockWrappers, unlockWrappers map[string]string, tree *parser.Tree, result *DetectResult) {
 	lockLines := make(map[int]string)
 	unlockLines := make(map[int]string)
 	for _, call := range calls {
@@ -696,27 +697,21 @@ func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, cal
 			unlockLines[call.StartLine()] = mutex
 		}
 	}
-
-	lockLine := 0
-	unlockLine := 0
-	var mutexName string
-	for ll, mname := range lockLines {
-		for ul, uname := range unlockLines {
-			if ul > ll && mname == uname {
-				if lockLine == 0 || ll < lockLine {
-					lockLine = ll
-					unlockLine = ul
-					mutexName = mname
-				}
-			}
-		}
-	}
-	if lockLine == 0 {
+	if len(lockLines) == 0 {
 		return
 	}
 
+	// A shared-state write is a race only when execution can reach it without
+	// holding the mutex — the CFG must-hold analysis, not "after the earliest
+	// unlock line". The line-range test misread a guard-branch early-exit unlock
+	// (`if (cond) { unlock(m); return; }`) as the critical section's end and
+	// flagged a write that is still protected on the surviving path (issue #282
+	// F8). heldByLine[line] is non-empty iff at least one mutex is definitely
+	// held on every path reaching line.
+	heldByLine := d.mustHoldByLine(ctx, body, f.EndLine, calls, f, lockWrappers, unlockWrappers, tree)
+
 	for _, assign := range assigns {
-		if assign.StartLine() <= unlockLine || assign.StartLine() > f.EndLine {
+		if assign.StartLine() > f.EndLine {
 			continue
 		}
 		// Match the assignment's LHS variable name, not the whole statement text:
@@ -734,6 +729,13 @@ func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, cal
 		if !strings.Contains(lower, "g_") && !strings.Contains(lower, "global") && !strings.Contains(lower, "shared") {
 			continue
 		}
+		if len(heldByLine[assign.StartLine()]) > 0 {
+			continue // protected on every path
+		}
+		mutexName, lockLine, unlockLine := enclosingLockSite(lockLines, unlockLines, assign.StartLine())
+		if mutexName == "" {
+			continue // no lock precedes the write; nothing guards it
+		}
 		if emitEvent(ctx, d.store, d.logger, "RACE_CONDITION", f.ID, &db.Location{FileID: file.ID, Line: assign.StartLine(), Column: assign.StartColumn()}, map[string]string{
 			"mutex":       mutexName,
 			"lock_line":   fmt.Sprintf("%d", lockLine),
@@ -744,6 +746,29 @@ func (d *RaceConditionDetector) detectLockUnlockPattern(ctx context.Context, cal
 		}
 		break
 	}
+}
+
+// enclosingLockSite returns the mutex a shared-state write is expected to be
+// guarded by and that mutex's critical-section interval: the most recent lock
+// before the write and its first matching unlock. It reports nothing when no
+// lock precedes the write (the write is not "outside a lock", it precedes any
+// locking, which this detector does not flag).
+func enclosingLockSite(lockLines, unlockLines map[int]string, writeLine int) (mutex string, lockLine, unlockLine int) {
+	for ll, m := range lockLines {
+		if ll < writeLine && ll > lockLine {
+			lockLine = ll
+			mutex = m
+		}
+	}
+	if mutex == "" {
+		return "", 0, 0
+	}
+	for ul, um := range unlockLines {
+		if um == mutex && ul > lockLine && (unlockLine == 0 || ul < unlockLine) {
+			unlockLine = ul
+		}
+	}
+	return mutex, lockLine, unlockLine
 }
 
 func extractFirstArg(call parser.Node) string {
