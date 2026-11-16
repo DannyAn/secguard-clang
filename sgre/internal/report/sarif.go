@@ -518,9 +518,12 @@ func writeSarifFromFindings(sarifPath, rootDir string, findings []*db.Finding, k
 		// The AI's fix strategy is a textual suggestion, not a structured SARIF
 		// patch (it has no artifactChanges/replacements). Presenting it in the
 		// SARIF `fixes` field would make a consumer believe a concrete patch
-		// exists, so it travels as a custom property instead.
+		// exists, so it travels as a custom property instead. The AI composes it
+		// as Markdown (bold subsection headers) for the human-readable report, so
+		// the SARIF property is rendered as plain text — a JSON property is not
+		// a Markdown field.
 		if f.FixStrategy != "" {
-			result.Properties["fix_strategy"] = f.FixStrategy
+			result.Properties["fix_strategy"] = stripMarkdownEmphasis(f.FixStrategy)
 		}
 
 		results = append(results, result)
@@ -570,4 +573,38 @@ func sha256Hex(s string) string {
 // number for SARIF (the old "90%" string could not be compared numerically).
 func roundConfidence(c float64) float64 {
 	return math.Round(c*10000) / 10000
+}
+
+// stripMarkdownEmphasis removes the Markdown bold markers (** and __) the AI's
+// fix strategy uses for its subsection headers, so a plain-text consumer sees
+// "Recommended Fix — …" instead of "**Recommended Fix** — …". It only strips
+// doubled markers and only outside backtick code spans: a C snippet may
+// legitimately contain `*`/`**` (pointer dereference) and `_` (identifiers),
+// and the strategy's prose cites snake_case function names, so neither single
+// `*`/`_` nor backtick-delimited code is touched.
+func stripMarkdownEmphasis(s string) string {
+	if !strings.ContainsAny(s, "`*_") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	inCode := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '`' {
+			inCode = !inCode
+			b.WriteByte(c)
+			continue
+		}
+		if inCode {
+			b.WriteByte(c)
+			continue
+		}
+		if (c == '*' || c == '_') && i+1 < len(s) && s[i+1] == c {
+			i++
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
