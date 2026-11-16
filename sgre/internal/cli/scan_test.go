@@ -225,10 +225,12 @@ func TestScanZeroCandidateTypesMarkedDone(t *testing.T) {
 func captureOutput(fn func() int) (stdout, stderr string, exitCode int) {
 	oldStdout := os.Stdout
 	oldStderr := os.Stderr
+	oldCliStdout := cliStdout
 	rOut, wOut, _ := os.Pipe()
 	rErr, wErr, _ := os.Pipe()
 	os.Stdout = wOut
 	os.Stderr = wErr
+	cliStdout = wOut
 
 	doneOut := make(chan struct{})
 	doneErr := make(chan struct{})
@@ -254,6 +256,7 @@ func captureOutput(fn func() int) (stdout, stderr string, exitCode int) {
 	<-doneErr
 	os.Stdout = oldStdout
 	os.Stderr = oldStderr
+	cliStdout = oldCliStdout
 	return
 }
 
