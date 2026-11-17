@@ -707,3 +707,31 @@ func TestMemoryLeak_TransferViaConfigRegistered(t *testing.T) {
 	}
 }
 
+// TestMemoryLeak_FieldAllocFree locks in the field-path tracking-key fix
+// (Issue #288): `s.buf = malloc(...)` and `free(s.buf)` / `PROJ_FREE(s.buf)`
+// share one base+field key, so the allocation is released instead of falsely
+// reported as a leak — while distinct fields stay distinct and a whole-struct
+// cleanup still releases every field.
+func TestMemoryLeak_FieldAllocFree(t *testing.T) {
+	apikb.RegisterOwnershipTransfer("cleanup_288")
+	store := runIndexAndDetect(t, "tc_ml_field_alloc_free.c")
+	allocByFunc, releaseByFunc := countEventsByFunction(t, store, "MEMORY_ALLOC", "MEMORY_RELEASE")
+
+	cases := []struct {
+		fn     string
+		allocs int
+		rel    int
+	}{
+		{"ml288_field_free_all_paths", 1, 1},
+		{"ml288_field_free_macro", 1, 1},
+		{"ml288_distinct_fields", 2, 1},
+		{"ml288_whole_struct_cleanup", 2, 2},
+		{"ml288_real_leak", 1, 0},
+	}
+	for _, c := range cases {
+		if allocByFunc[c.fn] != c.allocs || releaseByFunc[c.fn] != c.rel {
+			t.Errorf("%s: got %d alloc / %d release, want %d alloc / %d release",
+				c.fn, allocByFunc[c.fn], releaseByFunc[c.fn], c.allocs, c.rel)
+		}
+	}
+}

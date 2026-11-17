@@ -99,15 +99,12 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				allocVarNames[name] = true
 			}
 
-			for varName, allocLines := range allocs {
-				allFreeCalls := frees[varName]
+			for varName, allocSites := range allocs {
 				// realloc into a DIFFERENT target (`tmp = realloc(p, n)`) consumes
 				// p's block on success and leaves p reachable on failure, so p is
 				// never leaked by that call — model it as a release at the realloc
 				// line so p is not reported.
-				for _, l := range findReallocConsumeLines(assigns, inits, f, varName) {
-					allFreeCalls = append(allFreeCalls, freeCall{line: l, api: "realloc"})
-				}
+				reallocConsumeLines := findReallocConsumeLines(assigns, inits, f, varName)
 				// self-realloc `p = realloc(p, n)` leaks the OLD block when realloc
 				// fails (returns NULL) — ML-12.
 				selfReallocLines := findSelfReallocLines(assigns, inits, f, varName)
@@ -128,8 +125,20 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				escapeLinesAll := findEscapeLines(assigns, calls, returns, ids, f, varName, localVars, allocVarNames, allocReturns, true, escapeFuncs)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
-				for _, allocLine := range allocLines {
+				for _, site := range allocSites {
+					allocLine := site.line
 					allocAPI := callNameAtLine(calls, allocLine)
+					// A release of the exact field (free(s.a)) releases only that
+					// field's allocation; a whole-struct/whole-variable release
+					// (cleanup(&s), free(p)) is recorded under the base and releases
+					// every field allocation under it (Issue #288).
+					allFreeCalls := append([]freeCall(nil), frees[site.key]...)
+					if base := allocKeyBase(site.key); base != site.key {
+						allFreeCalls = append(allFreeCalls, frees[base]...)
+					}
+					for _, l := range reallocConsumeLines {
+						allFreeCalls = append(allFreeCalls, freeCall{line: l, api: "realloc"})
+					}
 					// Family pairing (docs §6): an object allocated by a modeled
 					// API is validly released only by its ValidFrees (plus generic
 					// releases where the model allows). A mismatched releaser —
@@ -287,8 +296,15 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	return result, err
 }
 
-func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns, borrowFuncs map[string]bool, scalarVars map[string]bool, bumpAllocators map[string]bool) map[string][]int {
-	allocs := make(map[string][]int)
+// leakAllocSite is one allocation site: the source line and the full tracking key
+// (the bare variable name, or the base+field path for a field/subscript store).
+type leakAllocSite struct {
+	line int
+	key  string
+}
+
+func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function, file *db.File, assigns, inits, calls []parser.Node, allocReturns, borrowFuncs map[string]bool, scalarVars map[string]bool, bumpAllocators map[string]bool) map[string][]leakAllocSite {
+	allocs := make(map[string][]leakAllocSite)
 
 	checkNode := func(node parser.Node) {
 		lhs, rhs, ok := node.AssignParts()
@@ -325,30 +341,22 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 		if callee := callCalleeName(rhs); callee != "" && bumpAllocators[callee] {
 			return
 		}
-		varName := ""
-		if lhs.Kind() == "identifier" {
-			varName = lhs.Text()
-			// A whole-variable store to a SCALAR local (bool/int/uint32_t/...)
-			// is a status-code assignment, not a heap allocation, even when the
-			// callee name triggers the zero-config allocator heuristic (`_new`,
-			// `remalloc`, `*_alloc`). Only a pointer-typed target can hold an
-			// allocation; a known-scalar local is skipped. Typedef'd pointer
-			// types (`MsgPdu p` = `char **p`) are NOT in scalarVars, so they
-			// stay candidates (fail-open) — never a silent false negative.
-			if scalarVars[varName] {
-				return
-			}
-		} else {
-			for _, child := range lhs.NamedChildren() {
-				if child.Kind() == "identifier" {
-					varName = child.Text()
-					break
-				}
-			}
+		key := allocTrackKey(lhs)
+		if key == "" {
+			return
 		}
-		if varName != "" {
-			allocs[varName] = append(allocs[varName], node.StartLine())
+		// A whole-variable store to a SCALAR local (bool/int/uint32_t/...) is a
+		// status-code assignment, not a heap allocation, even when the callee
+		// name triggers the zero-config allocator heuristic (`_new`, `remalloc`,
+		// `*_alloc`). Only a pointer-typed target can hold an allocation; a
+		// known-scalar local is skipped. Typedef'd pointer types (`MsgPdu p` =
+		// `char **p`) are NOT in scalarVars, so they stay candidates (fail-open)
+		// — never a silent false negative.
+		if lhs.Kind() == "identifier" && scalarVars[key] {
+			return
 		}
+		base := allocKeyBase(key)
+		allocs[base] = append(allocs[base], leakAllocSite{line: node.StartLine(), key: key})
 	}
 
 	for _, assign := range assigns {
@@ -372,12 +380,12 @@ func (d *MemoryLeakDetector) findAllocations(ctx context.Context, f *db.Function
 			continue
 		}
 		if name := outputParamAllocVar(call); name != "" {
-			allocs[name] = append(allocs[name], call.StartLine())
+			allocs[name] = append(allocs[name], leakAllocSite{line: call.StartLine(), key: name})
 		}
 	}
 
 	for name := range allocs {
-		sort.Ints(allocs[name])
+		sort.Slice(allocs[name], func(i, j int) bool { return allocs[name][i].line < allocs[name][j].line })
 	}
 	return allocs
 }
@@ -438,7 +446,7 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 		// when the macro body calls free(param) itself.
 		if s, ok := macros[callName]; ok && s.freesArg {
 			if args := getCallArgs(call); len(args) > 0 {
-				recordFree(argIdentifier(args[0]), call.StartLine(), "free")
+				recordFree(freeArgKey(args[0]), call.StartLine(), "free")
 			}
 			continue
 		}
@@ -452,13 +460,13 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 			// leak, matching the supplement's "helper releases only members" case.
 			if s, ok := summaries[callName]; ok && s.ParamDirectFrees[0] {
 				if args := getCallArgs(call); len(args) > 0 {
-					recordFree(argIdentifier(args[0]), call.StartLine(), callName)
+					recordFree(freeArgKey(args[0]), call.StartLine(), callName)
 				}
 			}
 			continue
 		}
 		if args := getCallArgs(call); len(args) > 0 {
-			recordFree(argIdentifier(args[0]), call.StartLine(), callName)
+			recordFree(freeArgKey(args[0]), call.StartLine(), callName)
 		}
 	}
 	return frees
@@ -495,6 +503,92 @@ func argIdentifier(arg parser.Node) string {
 				}
 			}
 		}
+	}
+	return ""
+}
+
+// allocTrackKey returns the full tracking key of an allocation or release
+// target: the bare identifier for `p`, the base+field path for a field access
+// (`p.field`, `p->field`) and the base+index for a subscript (`arr[0]`, `arr[]`
+// for a variable index). Two fields of one struct are distinct keys, so
+// `p.a = malloc(); p.b = malloc(); free(p.a);` releases only `p.a` while `p.b`
+// still leaks (Issue #288). It returns "" for a target it cannot name (a call,
+// a nested field chain whose base is not a bare identifier, ...).
+func allocTrackKey(node parser.Node) string {
+	switch node.Kind() {
+	case "identifier":
+		return node.Text()
+	case "field_expression":
+		base, field := extractFieldAccess(node)
+		if base == "" || field == "" {
+			return ""
+		}
+		return base + "." + field
+	case "subscript_expression":
+		base, field := subscriptAccess(node)
+		if base == "" || field == "" {
+			return ""
+		}
+		return field
+	case "pointer_expression":
+		// `*root = malloc()` stores into the pointee of root (an output
+		// parameter): track it under the base identifier, matching the release
+		// `cJSON_Delete(*root)` which argIdentifier unwraps to "root".
+		for _, c := range node.NamedChildren() {
+			if c.Kind() == "identifier" {
+				return c.Text()
+			}
+		}
+	case "pointer_declarator", "array_declarator", "function_declarator",
+		"parenthesized_declarator", "init_declarator":
+		// `char *p = malloc(...)` / `int *arr = malloc(...)`: the LHS of an
+		// init_declarator is its declarator, whose bound identifier is the
+		// whole-variable allocation target.
+		return declaredIdentifier(node)
+	}
+	return ""
+}
+
+// allocKeyBase returns the base identifier of a tracking key: "s" for "s.field"
+// and "s[0]", and the key itself for a bare identifier. A whole-struct release
+// (`cleanup(&s)`) is recorded under the base and releases every field allocation
+// under that base.
+func allocKeyBase(key string) string {
+	for i := 0; i < len(key); i++ {
+		if key[i] == '.' || key[i] == '[' {
+			return key[:i]
+		}
+	}
+	return key
+}
+
+// freeArgKey returns the tracking key of a release-call argument. It mirrors
+// argIdentifier's cast/parenthesized/address-of unwrapping, but maps a field or
+// subscript argument (`free(p->f)` / `free(p.field)` / `free(a[0])`) to its
+// full path key instead of dropping it, so it pairs with the matching
+// field-store allocation. A bare identifier or an address-of (`cleanup(&s)`)
+// still maps to the base, which releases the whole variable/struct.
+func freeArgKey(arg parser.Node) string {
+	switch arg.Kind() {
+	case "identifier":
+		return arg.Text()
+	case "parenthesized_expression", "cast_expression":
+		for _, c := range arg.NamedChildren() {
+			if id := freeArgKey(c); id != "" {
+				return id
+			}
+		}
+	case "pointer_expression":
+		text := strings.TrimSpace(arg.Text())
+		if strings.HasPrefix(text, "*") || strings.HasPrefix(text, "&") {
+			for _, c := range arg.NamedChildren() {
+				if id := freeArgKey(c); id != "" {
+					return id
+				}
+			}
+		}
+	case "field_expression", "subscript_expression":
+		return allocTrackKey(arg)
 	}
 	return ""
 }
