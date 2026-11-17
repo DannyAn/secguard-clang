@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/DannyAn/secguard-clang/internal/apikb"
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -53,6 +54,31 @@ var weakPrngFunctions = map[string]bool{
 	"rand": true, "srand": true,
 }
 
+// weakCryptoAlgorithm maps a weak-crypto function name to its algorithm family
+// (the label a secguard.toml [crypto_misuse.accepted_algorithms] key spells),
+// so an accepted family like "MD5" suppresses MD5/MD5_Init/MD5_Update/MD5_Final
+// alike. Empty for a function that is not a weak-crypto function.
+func weakCryptoAlgorithm(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "md5"):
+		return "MD5"
+	case strings.Contains(lower, "sha1"):
+		return "SHA-1"
+	case strings.Contains(lower, "des_cbc") || strings.Contains(lower, "des_ncbc"):
+		return "DES-CBC"
+	case strings.Contains(lower, "des_ecb"):
+		return "DES-ECB"
+	case strings.Contains(lower, "des"):
+		return "DES"
+	case strings.Contains(lower, "rc4"):
+		return "RC4"
+	case strings.Contains(lower, "crypt"):
+		return "crypt"
+	}
+	return ""
+}
+
 func (d *CryptoMisuseDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
@@ -66,10 +92,12 @@ func (d *CryptoMisuseDetector) Detect(ctx context.Context) (DetectResult, error)
 				callName := extractCallName(call)
 
 				if reason, ok := weakCryptoFunctions[callName]; ok {
-					d.emitCryptoEvent(ctx, file, f, call, callName, reason, "weak_algorithm", &result)
+					if apikb.AcceptedCryptoAlgorithm(weakCryptoAlgorithm(callName)) == "" {
+						d.emitCryptoEvent(ctx, file, f, call, callName, reason, "weak_algorithm", &result)
+					}
 				}
 
-				if weakPrngFunctions[callName] {
+				if weakPrngFunctions[callName] && apikb.AcceptedCryptoAlgorithm(callName) == "" {
 					d.emitCryptoEvent(ctx, file, f, call, callName, "weak PRNG for security context", "weak_random", &result)
 				}
 			}

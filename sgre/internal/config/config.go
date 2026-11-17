@@ -30,6 +30,7 @@ type Config struct {
 	Deallocators           Deallocators           `toml:"deallocators"`
 	SanitizeFunctions      SanitizeFunctions      `toml:"sanitize_functions"`
 	OwnershipTransferCalls OwnershipTransferCalls `toml:"ownership_transfer_calls"`
+	CryptoMisuse           CryptoMisuse           `toml:"crypto_misuse"`
 	Nullability            Nullability            `toml:"nullability"`
 	IntegerOverflow        IntegerOverflow        `toml:"integer_overflow"`
 	Uninit                 Uninit                 `toml:"uninit"`
@@ -569,6 +570,29 @@ type SanitizeFunctions struct {
 //	names = ["list_push_back", "dict_set", "buffer_append"]
 type OwnershipTransferCalls struct {
 	Names []string `toml:"names"`
+}
+
+// CryptoMisuse tunes the crypto-misuse detector. accepted_algorithms is an
+// acceptance list of weak algorithms the project keeps for compatibility or
+// non-security use (a legacy DES-CBC protocol, an MD5 config checksum), keyed by
+// algorithm family and mapped to the acceptance reason for audit. An algorithm
+// listed here no longer surfaces a crypto-misuse finding; the reason stays in
+// the config as the audit record.
+//
+//	[crypto_misuse.accepted_algorithms]
+//	"DES-CBC" = "compat: reason-ref=TICKET-123"
+//	"MD5"     = "non-security use: config checksum"
+type CryptoMisuse struct {
+	AcceptedAlgorithms map[string]string `toml:"accepted_algorithms"`
+}
+
+// AcceptedCryptoAlgorithms returns the project-declared weak-algorithm
+// acceptance list (algorithm family -> reason).
+func (c *Config) AcceptedCryptoAlgorithms() map[string]string {
+	if c == nil {
+		return nil
+	}
+	return c.CryptoMisuse.AcceptedAlgorithms
 }
 
 // Nullability declares function return-value nullability for third-party

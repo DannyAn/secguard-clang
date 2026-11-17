@@ -78,6 +78,9 @@ func Execute(ctx context.Context, args []string) int {
 	for _, n := range cfg.OwnershipTransferCallNames() {
 		apikb.RegisterOwnershipTransfer(n)
 	}
+	for algorithm, reason := range cfg.AcceptedCryptoAlgorithms() {
+		apikb.RegisterAcceptedCryptoAlgorithm(algorithm, reason)
+	}
 	for name, idx := range cfg.IntegerOverflowTruncatingWrappers() {
 		apikb.RegisterTruncatingWrapper(name, idx)
 	}

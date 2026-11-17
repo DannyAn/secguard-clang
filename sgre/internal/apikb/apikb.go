@@ -970,6 +970,28 @@ func RegisterOwnershipTransfer(name string) {
 	}
 }
 
+// acceptedCryptoAlgorithms holds project-declared weak-algorithm acceptance
+// entries registered at CLI startup from secguard.toml
+// [crypto_misuse.accepted_algorithms]: an algorithm family the project keeps
+// for compatibility/non-security use, keyed by its normalized (upper-cased)
+// name and mapped to the acceptance reason. A weak-crypto function belonging to
+// an accepted family no longer surfaces a crypto-misuse finding.
+var acceptedCryptoAlgorithms = map[string]string{}
+
+// RegisterAcceptedCryptoAlgorithm adds a project-declared accepted weak
+// algorithm family (e.g. "DES-CBC", "MD5") with its acceptance reason.
+func RegisterAcceptedCryptoAlgorithm(algorithm, reason string) {
+	if algorithm != "" {
+		acceptedCryptoAlgorithms[strings.ToUpper(strings.TrimSpace(algorithm))] = reason
+	}
+}
+
+// AcceptedCryptoAlgorithm returns the acceptance reason when algorithm (a weak
+// crypto algorithm family name, e.g. "DES-CBC" or "MD5") is accepted, else "".
+func AcceptedCryptoAlgorithm(algorithm string) string {
+	return acceptedCryptoAlgorithms[strings.ToUpper(strings.TrimSpace(algorithm))]
+}
+
 // BuiltinNonNullReturning are libc/POSIX functions that return a pointer but are
 // guaranteed non-null by contract. The mem*/str* copy family (memcpy, strcpy,
 // ...) returns the caller-supplied dest pointer verbatim — the return value is

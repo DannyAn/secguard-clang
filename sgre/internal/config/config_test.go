@@ -246,6 +246,24 @@ names = ["list_push_back", "dict_set", "buffer_append"]
 	}
 }
 
+func TestLoad_CryptoAcceptedAlgorithms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	content := `[crypto_misuse.accepted_algorithms]
+"DES-CBC" = "compat: reason-ref=TICKET-123"
+"MD5"     = "non-security use: config checksum"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	cfg := Load()
+	got := cfg.AcceptedCryptoAlgorithms()
+	if len(got) != 2 || got["DES-CBC"] != "compat: reason-ref=TICKET-123" || got["MD5"] != "non-security use: config checksum" {
+		t.Errorf("crypto_misuse.accepted_algorithms = %v, want two entries with reasons", got)
+	}
+}
+
 func TestLoad_IntegerOverflowTruncatingWrappers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secguard.toml")
