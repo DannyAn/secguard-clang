@@ -57,7 +57,7 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 				releaseLines, hasRelease := releases[varName]
 				filteredReturns := filterNullGuardReturns(ifs, returnLines, varName)
 				nullGuardReturns := subtractLines(returnLines, filteredReturns)
-				escapeLines := findEscapeLines(assigns, calls, returns, ids, f, varName, localVars, nil, nil, true)
+				escapeLines := findEscapeLines(assigns, calls, returns, ids, f, varName, localVars, nil, nil, true, nil)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, acquireLine := range acquireLines {
