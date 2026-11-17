@@ -594,3 +594,116 @@ func TestMemoryLeak_StructFieldCleanupByAddress(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryLeak_TransferInferred locks in the callee-body ownership-transfer
+// inference (issue #289 T1): queue_write stores its pointer parameter into a
+// non-local object (m->payload = p), so a call to it takes ownership of the
+// argument regardless of its name. The caller's ptr must be released, not leaked.
+func TestMemoryLeak_TransferInferred(t *testing.T) {
+	store := runIndexAndDetect(t, "tc_ml_transfer_inferred.c")
+	ctx := context.Background()
+
+	allocVars := map[string]bool{}
+	releaseVars := map[string]bool{}
+
+	allocEvents, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	for _, e := range allocEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		allocVars[props.Variable] = true
+	}
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		releaseVars[props.Variable] = true
+	}
+
+	if allocVars["ptr"] && !releaseVars["ptr"] {
+		t.Errorf("ptr is handed to queue_write (callee stores to non-local); must be released, not leaked")
+	}
+	if !releaseVars["ptr"] {
+		t.Errorf("ptr should be released (escaped via callee-body evidence), got allocVars=%v releaseVars=%v", allocVars, releaseVars)
+	}
+}
+
+// TestMemoryLeak_NoTransferStillLeaks locks in the reverse case for the
+// callee-body inference (issue #289 T1): use_ptr only READS its argument, so
+// no ownership transfer is inferred and the success path without a free must
+// still be reported as a leak.
+func TestMemoryLeak_NoTransferStillLeaks(t *testing.T) {
+	store := runIndexAndDetect(t, "tc_ml_no_transfer_leak.c")
+	ctx := context.Background()
+
+	allocVars := map[string]bool{}
+	releaseVars := map[string]bool{}
+
+	allocEvents, err := store.ListEventsByType(ctx, "MEMORY_ALLOC")
+	if err != nil {
+		t.Fatalf("list MEMORY_ALLOC: %v", err)
+	}
+	for _, e := range allocEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		allocVars[props.Variable] = true
+	}
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		releaseVars[props.Variable] = true
+	}
+
+	if !allocVars["q"] {
+		t.Errorf("q has no ownership transfer on the success path; must still be an allocation site")
+	}
+	if releaseVars["q"] {
+		t.Errorf("q must still leak (use_ptr only reads it), but got a release")
+	}
+}
+
+// TestMemoryLeak_TransferViaConfigRegistered locks the config-driven path
+// alongside the new inference (issue #289 T1): queue_write_w has no in-tree
+// body and no naming-token match, so RegisterOwnershipTransfer is the only
+// mechanism that suppresses the leak.
+func TestMemoryLeak_TransferViaConfigRegistered(t *testing.T) {
+	apikb.RegisterOwnershipTransfer("queue_write_w")
+	store := runIndexAndDetect(t, "tc_ml_transfer_registered.c")
+	ctx := context.Background()
+
+	releaseEvents, err := store.ListEventsByType(ctx, "MEMORY_RELEASE")
+	if err != nil {
+		t.Fatalf("list MEMORY_RELEASE: %v", err)
+	}
+	foundRelease := false
+	for _, e := range releaseEvents {
+		var props struct {
+			Variable string `json:"variable"`
+		}
+		_ = json.Unmarshal([]byte(e.Properties), &props)
+		if props.Variable == "ptr" {
+			foundRelease = true
+		}
+	}
+	if !foundRelease {
+		t.Errorf("ptr is passed to queue_write_w (registered ownership-transfer); should be released/escaped, not leaked")
+	}
+}
+

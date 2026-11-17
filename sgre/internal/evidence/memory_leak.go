@@ -31,7 +31,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// Wrapper functions that return an allocator result (the "封装成函数"
 	// production pattern) are allocation sites even with a custom name. Computed
 	// once for the whole codebase, not per file.
-	allocReturns, borrowFuncs, err := allocatorReturnFuncs(ctx, d.store, d.parser, d.logger)
+	allocReturns, borrowFuncs, escapeFuncs, err := allocatorReturnFuncs(ctx, d.store, d.parser, d.logger)
 	if err != nil {
 		return result, err
 	}
@@ -125,7 +125,7 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 				// the out-param variable: the allocation never happened on that
 				// branch (docs §5.3 success-branch binding).
 				nullGuardReturns = append(nullGuardReturns, findAllocGuardedReturns(ifs, returns, assigns, inits, f, varName)...)
-				escapeLinesAll := findEscapeLines(assigns, calls, returns, ids, f, varName, localVars, allocVarNames, allocReturns, true)
+				escapeLinesAll := findEscapeLines(assigns, calls, returns, ids, f, varName, localVars, allocVarNames, allocReturns, true, escapeFuncs)
 				overwriteLines := writeLinesFor(assigns, inits, f, varName)
 
 				for _, allocLine := range allocLines {
@@ -1092,7 +1092,7 @@ func findFreeOnBorrowSites(assigns, inits, calls []parser.Node, f *db.Function) 
 	return sites
 }
 
-func findEscapeLines(assigns, calls, returns, ids []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool, useEscapeFuncs bool) []int {
+func findEscapeLines(assigns, calls, returns, ids []parser.Node, f *db.Function, varName string, localVars map[string]bool, allocVarNames map[string]bool, allocReturns map[string]bool, useEscapeFuncs bool, escapeFuncs map[string]map[int]bool) []int {
 	var lines []int
 	for _, assign := range assigns {
 		if !funcLineRange(f, assign.StartLine()) {
@@ -1235,6 +1235,28 @@ func findEscapeLines(assigns, calls, returns, ids []parser.Node, f *db.Function,
 					lines = append(lines, call.StartLine())
 					break
 				}
+			}
+		}
+	}
+	// Callee-body evidence: a callee proven to store its idx-th parameter into
+	// a non-local object takes ownership of that argument regardless of its
+	// name. This is the precise complement to the naming heuristic
+	// (IsEscapeFunction): `queue_write(m, ptr)` is an escape when queue_write's
+	// body stores the pointer parameter into a non-local (`m->payload = p`),
+	// even though the name carries no _put/_push/_queue/... token.
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) {
+			continue
+		}
+		idxs := escapeFuncs[extractCallName(call)]
+		if len(idxs) == 0 {
+			continue
+		}
+		args := getCallArgs(call)
+		for idx := range idxs {
+			if idx < len(args) && argIdentifier(args[idx]) == varName {
+				lines = append(lines, call.StartLine())
+				break
 			}
 		}
 	}
@@ -1941,13 +1963,13 @@ func callCalleeName(expr parser.Node) string {
 	return extractCallName(expr)
 }
 
-func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (allocReturns map[string]bool, borrowFuncs map[string]bool, err error) {
+func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (allocReturns map[string]bool, borrowFuncs map[string]bool, escapeFuncs map[string]map[int]bool, err error) {
 	// Precise cross-function "callee takes ownership of an argument" summary.
 	// Computed before the borrow check so every wrapper can see helper functions
 	// defined in ANY file, not just the current translation unit.
-	escapeFuncs, err := globalStoreFuncs(ctx, store, p, logger)
+	escapeFuncs, err = globalStoreFuncs(ctx, store, p, logger)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	returnedSource := make(map[string]map[string]bool)
@@ -2011,7 +2033,7 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 						// allocator wrapper that calls a `_add`/`_store` helper for
 						// logging must NOT be misread as a borrow (EL-03); only a
 						// helper PROVEN to store its argument to a global counts.
-						if len(findEscapeLines(assigns, calls, returns, nil, f, v, localVars, nil, nil, false)) > 0 ||
+						if len(findEscapeLines(assigns, calls, returns, nil, f, v, localVars, nil, nil, false, nil)) > 0 ||
 							passesToGlobalStoreFunc(calls, f, v, escapeFuncs) {
 							borrowFuncs[f.Name] = true
 							continue
@@ -2023,7 +2045,7 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 		}
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	out := make(map[string]bool)
@@ -2042,7 +2064,7 @@ func allocatorReturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 			}
 		}
 	}
-	return out, borrowFuncs, nil
+	return out, borrowFuncs, escapeFuncs, nil
 }
 
 // isBorrowCall reports whether expr is (or casts) a call to a function that
