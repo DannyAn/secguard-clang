@@ -12,32 +12,43 @@ import (
 // argShapeCounts is the per-(callee, parameter) census of in-tree call-site
 // argument shapes. literal counts provably-constant arguments (string/number
 // literals, address-of, compound literals — isDefinitelyUnTainted), tainted
-// counts direct taint-source expressions (getenv(...), argv[1], ...), and
-// variable counts everything else (bare identifiers, complex expressions)
-// whose provenance the census does not resolve.
+// counts direct taint-source expressions (getenv(...), argv[1], ...),
+// internalRuntime counts buffers built in-tree by a snprintf-family call with a
+// fixed integer-only format (no %s/%[/%n), and variable counts everything else
+// (bare identifiers, complex expressions) whose provenance the census does not
+// resolve.
 type argShapeCounts struct {
-	literal  int
-	tainted  int
-	variable int
+	literal         int
+	tainted         int
+	internalRuntime int
+	variable        int
 }
 
 func (a *argShapeCounts) sites() int {
 	if a == nil {
 		return 0
 	}
-	return a.literal + a.tainted + a.variable
+	return a.literal + a.tainted + a.internalRuntime + a.variable
 }
 
 // allLiteral reports whether the census PROVES the parameter cannot receive
 // non-constant data in-tree: at least one call site binds it, and every one
 // binds a compile-time constant.
 func (a *argShapeCounts) allLiteral() bool {
-	return a != nil && a.literal > 0 && a.tainted == 0 && a.variable == 0
+	return a != nil && a.literal > 0 && a.tainted == 0 && a.internalRuntime == 0 && a.variable == 0
+}
+
+// allConstant reports whether every in-tree call site binds either a
+// compile-time constant or an internally-built runtime buffer — neither can
+// carry attacker-controlled format/path content.
+func (a *argShapeCounts) allConstant() bool {
+	return a != nil && a.literal+a.internalRuntime > 0 && a.tainted == 0 && a.variable == 0
 }
 
 // fact renders the compact census for the callsites@ hint token value:
-// "3:all-literal" or "5:3-literal,2-var" (only non-zero classes listed, in
-// literal/tainted/var order). Empty when no call site binds the parameter.
+// "3:all-literal", "3:all-constant", or "5:3-literal,2-var" (only non-zero
+// classes listed, in literal/tainted/internal-runtime/var order). Empty when no
+// call site binds the parameter.
 func (a *argShapeCounts) fact() string {
 	if a == nil || a.sites() == 0 {
 		return ""
@@ -45,12 +56,18 @@ func (a *argShapeCounts) fact() string {
 	if a.allLiteral() {
 		return fmt.Sprintf("%d:all-literal", a.literal)
 	}
+	if a.allConstant() {
+		return fmt.Sprintf("%d:all-constant", a.sites())
+	}
 	var classes []string
 	if a.literal > 0 {
 		classes = append(classes, fmt.Sprintf("%d-literal", a.literal))
 	}
 	if a.tainted > 0 {
 		classes = append(classes, fmt.Sprintf("%d-tainted", a.tainted))
+	}
+	if a.internalRuntime > 0 {
+		classes = append(classes, fmt.Sprintf("%d-internal-runtime", a.internalRuntime))
 	}
 	if a.variable > 0 {
 		classes = append(classes, fmt.Sprintf("%d-var", a.variable))
@@ -117,7 +134,7 @@ func (cs *callsiteCensus) gateDrop(funcID int64, funcName string, paramIdx int) 
 		return nil, false
 	}
 	shapes := cs.shapes(funcID, paramIdx)
-	if !shapes.allLiteral() {
+	if !shapes.allConstant() {
 		return nil, false
 	}
 	return shapes, true
@@ -172,6 +189,8 @@ func classForKind(kind int) string {
 		return "literal"
 	case 1:
 		return "tainted"
+	case 3:
+		return "internal-runtime"
 	}
 	return "variable"
 }
@@ -295,6 +314,7 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context, tc *tain
 		// callers all pass constants still reached the classifier (production:
 		// format-string false positives whose callers pass a local template).
 		locals := collectLocalStringConsts(body, isStringMacro)
+		runtimeBufs := collectInternalRuntimeBufs(body)
 		for _, call := range calls {
 			name := callName(call)
 			if name == "" {
@@ -305,7 +325,7 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context, tc *tain
 				continue
 			}
 			for i, arg := range callArgs(call) {
-				var kind int // 0 literal, 1 tainted, 2 variable
+				var kind int // 0 literal, 1 tainted, 2 variable, 3 internal-runtime
 				switch {
 				case isDefinitelyUnTainted(arg):
 					kind = 0
@@ -316,6 +336,9 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context, tc *tain
 				case (arg.Kind() == "identifier" || arg.Kind() == "field_expression") &&
 					localConstAt(locals, compactIdentText(arg.Text()), call.StartLine(), calls):
 					kind = 0
+				case arg.Kind() == "identifier" &&
+					internalRuntimeAt(runtimeBufs, compactIdentText(arg.Text()), call.StartLine(), calls):
+					kind = 3
 				case isTaintSourceExpr(arg):
 					kind = 1
 				default:
@@ -336,6 +359,8 @@ func (f *TaintSourceFilter) computeCallsiteSummary(ctx context.Context, tc *tain
 						shapes.literal++
 					case 1:
 						shapes.tainted++
+					case 3:
+						shapes.internalRuntime++
 					default:
 						shapes.variable++
 					}
@@ -459,6 +484,9 @@ func expandCallsiteFact(fact string) string {
 	if parts[1] == "all-literal" {
 		return fmt.Sprintf("%s call sites (all literal)", parts[0])
 	}
+	if parts[1] == "all-constant" {
+		return fmt.Sprintf("%s call sites (all constant)", parts[0])
+	}
 	return fmt.Sprintf("%s call sites (%s)", parts[0], parts[1])
 }
 
@@ -525,6 +553,139 @@ func localConstAt(locals map[string]localConst, key string, callLine int, calls 
 		if line > lc.lastLiteralLine && line < callLine {
 			return false
 		}
+	}
+	return true
+}
+
+// runtimeFormatArgIdx maps a snprintf-family function to its format argument
+// index (the 0-based position of the format string).
+var runtimeFormatArgIdx = map[string]int{
+	"snprintf": 2, "snprintf_s": 2, "vsnprintf": 2, "vsnprintf_s": 2,
+}
+
+// collectInternalRuntimeBufs returns, per buffer variable in body, the line of
+// its LAST write by a qualifying snprintf-family call: a fixed format string
+// with only integer-class conversions (no %s/%[/%n) and scalar integer
+// arguments. Such a buffer holds digits/fixed text only, so passing it as a
+// format/path cannot carry attacker-controlled format specifiers.
+func collectInternalRuntimeBufs(body parser.Node) map[string]int {
+	out := map[string]int{}
+	for _, call := range body.FindAll("call_expression") {
+		name := callName(call)
+		fmtIdx, ok := runtimeFormatArgIdx[name]
+		if !ok {
+			continue
+		}
+		args := callArgs(call)
+		if len(args) <= fmtIdx {
+			continue
+		}
+		dstName := bareIdentVar(strings.TrimSpace(args[0].Text()))
+		if dstName == "" {
+			continue
+		}
+		if !isIntegerOnlyFormat(args[fmtIdx], args[fmtIdx+1:]) {
+			continue
+		}
+		out[dstName] = call.StartLine()
+	}
+	return out
+}
+
+// internalRuntimeAt reports whether lvalue is an internally-built runtime buffer
+// at this call site: written by a qualifying snprintf-family call before the
+// call line, with no intervening call that could mutate it through an escaped
+// pointer.
+func internalRuntimeAt(runtimeBufs map[string]int, key string, callLine int, calls []parser.Node) bool {
+	lastWrite, ok := runtimeBufs[key]
+	if !ok || lastWrite <= 0 || lastWrite >= callLine {
+		return false
+	}
+	for _, call := range calls {
+		line := call.StartLine()
+		if line > lastWrite && line < callLine {
+			return false
+		}
+	}
+	return true
+}
+
+// isIntegerOnlyFormat reports whether a snprintf-family call's format is a
+// string literal with no %s/%[/%n conversion and every variadic argument is a
+// scalar integer identifier or literal — so the produced buffer cannot carry
+// attacker-controlled format specifiers.
+func isIntegerOnlyFormat(fmtArg parser.Node, variadic []parser.Node) bool {
+	lit, ok := stringLiteralText(fmtArg)
+	if !ok || !integerOnlyConversions(lit) {
+		return false
+	}
+	for _, a := range variadic {
+		switch a.Kind() {
+		case "number_literal", "identifier", "char_literal":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// stringLiteralText returns the raw content (quotes and encoding prefix
+// stripped) of a single string_literal node.
+func stringLiteralText(n parser.Node) (string, bool) {
+	if n.Kind() != "string_literal" {
+		return "", false
+	}
+	raw := strings.TrimSpace(n.Text())
+	for _, p := range []string{"u8", "u", "U", "L"} {
+		if strings.HasPrefix(raw, p) && len(raw) > len(p) && raw[len(p)] == '"' {
+			raw = raw[len(p):]
+			break
+		}
+	}
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+		return "", false
+	}
+	return raw[1 : len(raw)-1], true
+}
+
+// integerOnlyConversions reports whether a printf format string contains only
+// integer-class conversions: every % specifier (other than %%) must end in a
+// non-string conversion (d/i/u/o/x/X/c/f/e/g/a/p/...). %s, %[, and %n are
+// rejected — the first two can inject caller-controlled bytes, the third writes
+// back to an argument.
+func integerOnlyConversions(fmt string) bool {
+	for i := 0; i < len(fmt); i++ {
+		if fmt[i] != '%' {
+			continue
+		}
+		if i+1 < len(fmt) && fmt[i+1] == '%' {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(fmt) && strings.IndexByte("-+ #0", fmt[j]) >= 0 {
+			j++
+		}
+		for j < len(fmt) && (fmt[j] >= '0' && fmt[j] <= '9' || fmt[j] == '*') {
+			j++
+		}
+		if j < len(fmt) && fmt[j] == '.' {
+			j++
+			for j < len(fmt) && (fmt[j] >= '0' && fmt[j] <= '9' || fmt[j] == '*') {
+				j++
+			}
+		}
+		for j < len(fmt) && strings.IndexByte("hljztL", fmt[j]) >= 0 {
+			j++
+		}
+		if j >= len(fmt) {
+			return false
+		}
+		switch fmt[j] {
+		case 's', '[', 'n':
+			return false
+		}
+		i = j
 	}
 	return true
 }

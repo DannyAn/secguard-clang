@@ -199,7 +199,7 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "path@", Display: "path@<literal|var>", Description: "permission_setting: the chmod path shape {value} — `literal` (a non-temp fixed path) is a certain world-writable file (confirm); `var` (a variable path or fd) is suspected (umask filtering cannot be proven)"},
 
 	// ---- format-string / path-traversal (caller-side census) ----
-	{Key: "callsites@", Display: "callsites@<census>", Description: "the in-tree call-site census for the sink parameter: {value} — `N:all-literal` means every in-tree caller passes a compile-time constant → dismiss; `N:K-literal,J-var` means the var/tainted callers are where attacker input could enter → inspect those callers before confirming; absent means no in-tree call site binds the parameter (an external TU may call it)"},
+	{Key: "callsites@", Display: "callsites@<census>", Description: "the in-tree call-site census for the sink parameter: {value} — `N:all-literal` means every in-tree caller passes a compile-time constant → dismiss; `N:all-constant` means every caller passes a constant or an internally-built runtime buffer (fixed snprintf format, integer conversions only) → dismiss; `N:K-literal,J-var` means the var/tainted callers are where attacker input could enter → inspect those callers before confirming; absent means no in-tree call site binds the parameter (an external TU may call it)"},
 
 	// ---- hardcoded-secret ----
 	{Key: "value-shape@", Display: "value-shape@<masked>", Description: "the literal's masked shape (4-char prefix + length): {value} — judge placeholder (REPLACE…), test value (test…), or real credential"},
