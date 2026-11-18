@@ -502,6 +502,13 @@ the type/range is confirmed, still call `--write-json` with the array of
 - **worker 心跳/进度（替代 mtime 猜测）**：liveness 信号因宿主而异——**OpenCode MCP 宿主**：子代理通过 `secguard_report` 工具直写 DB，**不落 chunk 文件**，liveness = `status --per-type` 的 `written_count` 在两次查询（间隔 >30s）间是否有增长；**shell-only 宿主**：子代理按 heartbeat 契约每 ~10 个候选刷新一次 `<subagent_id>-chunk-<k>.json`，liveness = chunk 文件 mtime。`status --reports` 对每条报告返回 `heartbeat_age_ms`、`stalled`（超过 `ai_stage.heartbeat_stall_ms`，默认 15 分钟未再落盘）和 `progress`（`classified` / `total` / `percent`）。`stalled=false` 或 `progress.classified` 仍在增长或 `written_count` 有增长就是「慢但在跑」，**不得**据此判死或重派；只有 `stalled=true` **且** `written_count` 无增长（F11 的一次复核，两次查询间隔 >30s）才允许按缺失 range 重派。
 - **判定完成的标准**：一个批次"完成"= 收到宿主通知（异步宿主）/ `Agent` 调用正常返回（同步宿主）/ 落盘报告 `valid:true` 覆盖（通知丢失时按 F9）。三种信号等价，任一到达即触发补位，不要只等一种。
 
+**F3a 通知纪律 — 完成信号只触发动作，不触发播报：** 补位状态机吸收一个完成信号后的动作是**静默**的（`status --reports` 吸收 settlement → `in_flight -= 1` → 积压非空则补派下一批），不在会话里逐批次播报进度。五条硬约束：
+- **按 task-id / agent-id 冗等去重**：同一完成信号（同一 task-id / agentId / settlement 文件名）只处理一次——到达即按 F11 幂等吸收并补位；重复到达（通知丢失后的补查、落盘报告的二次覆盖）只做幂等吸收，**不重复补派、不重复播报**。
+- **吸收 / 补位同回合静默完成**：吸收 settlement、`in_flight -= 1`、补派下一批都在同一响应轮内完成，中间不向用户输出任何状态文本。
+- **无可行动信号只给最小状态**：一个通知若没有触发任何动作（无 settlement 覆盖、无积压可补、无失败需恢复），不产生任何面向用户的文本；确需交代时只给一行最小状态。
+- **禁逐批次播报**：禁止在每收到一个完成信号时就发"批次 X 完成、已派批次 Y"之类消息；所有批次进度汇总到第 6 步最终报告一次性呈现。
+- **终报后迟到通知一句话收尾**：第 6 步最终报告发出后，迟到的完成通知若还有可吸收内容（漏掉的 settlement、补到的落盘报告），用一句话收尾补充，不再重开完整播报或改写报告。
+
 **子代理返回模型 (F7) — 这是"任务卡住不结束/结果丢失/重复下发"的根因，必读：** 三个平台的返回模型不同，绝不可混用：
 
 - **OpenCode（含 opencode-nga）的 `task` 工具是同步的**：一次 `task` 调用的返回值就是该子代理的最终消息（即 `Structured Report Protocol` 的 JSON 块）。**没有**独立的 "task-notification" 事件可等。因此 orchestrator 在同一个回合里连续发出 N 个 `task` 调用后，这些调用会逐一带回结果。**同步宿主的唯一调度状态机（超 host_max 队列的唯一合规路径）：每波返回后先按 F3a 吸收 settlement 并补派下一波（`in_flight < host_max` 就继续发），只有「积压队列为空 AND in_flight 为 0 AND `status --per-type` 的 `uncovered_ranges` 全空 AND 无 `in_flight_ranges`」全部成立时才进入第 5 步 Collect+finalize。严禁"首波 N 个返回就立刻 finalize"——那是把积压批次流程性放弃；也严禁在发出 task 后结束回合去"等通知"——那样这个回合就永远停在原地，任务计时一直走。**
@@ -541,6 +548,7 @@ secguard status --claim-type <type> --claim-range <range> --claim-holder <token>
 - `{"claimed": false, "reason": "done"}` → 该 range 已有结算报告（已覆盖）。跳过；只有 `needs_context` 二次下发这类**刻意重跑**才加 `--reclaim`（结果 `reason: "reclaim"`），普通恢复绝不用 `--reclaim`。
 - 一个 claim 超过 30 分钟未收到结算报告即视为陈旧（dead worker）：下一次 claim 会以 `reason: "stale"` 自动接管并把 `retry_count` +1。陈旧接管不是"再等一会"的替代——F11 的"一次复核后仍无 valid 报告且无进展"仍然是重派的前提。
 claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不计入** `written_count`，也不进 `r_type` 样本；结算报告落盘后由 `status --reports` 吸收为 `status='done'`，该 range 随即出现在 `already_covered_ranges` 而不是 `in_flight_ranges`。**先 claim 后 spawn；claim 失败绝不 spawn。**
+**禁止试探性 claim（F13）：** `--claim-holder` 不是每次 re-plan 都新生成一个的探测 token。orchestrator 在首波派发前**先规划好本轮要派的所有 `(type, range)` 及各自的 holder**，然后**每个 range 只认领一次**，该 holder 在**整个扫描全程复用**（F9/F11/F11a 的 re-plan、补位、重派都沿用同一 holder，不换名）。re-plan 时发现某 range 已锁槽（`claimed:false, reason:"held"`），**复用返回的 `holder`**——那是在跑 worker 的 token，把它当作已在途跳过、等它的完成信号按 F11 吸收，**绝不为同一 range 再 claim 一个新 holder**（否则会造出一个永远无人结算的孤儿占位，并逼自己在后续轮次反复手算 confirmed/dismissed 口径）。
 **claim 与 complete-type 的交互（不再纠结）：** claim 只是占位防重复分派；`report --complete-type` 的完成判定统一为 **`unclassified == 0`**（`candidate_count − AI confirmed − dismissed == 0`），**子代理用 `secguard_report`（MCP）或 `--write-json`（Bash）写回 verdicts 即构成完成证明**，complete-type 通过时自动把该类型的 dispatched claim 标为 done。**不需要子代理写 settlement 文件，也不需要 orchestrator 先 release-claim**——verdict 台账全覆盖时所有 range 的工作都已完成，claim 随 complete-type 自动结算。`unclassified > 0` 时 complete-type 返回 `status:"incomplete"`（退出码 1），按返回的 `uncovered_ranges` 补派即可。
 **多 type 批次**：一个 batch 最多含 4 个 type，每个 type 有自己的 range，因此按 `(type, range)` 逐个 claim。只有 `claimed:true` 的条目进入该 subagent 的派发提示词；`claimed:false` 的条目跳过（held = 别人在跑、done = 已覆盖），**不要**因为一个条目失败就放弃整批，也**不要**把未 claim 的 type 塞给 worker。整批都 `claimed:false` 就本轮不 spawn——但**不要结束回合**（F8）：在同一回合内继续按 F11 吸收已完成的批次（`status --reports` → `status --per-type`），然后再次尝试 claim；重复直到所有批次 done 或可 claim。
 
@@ -966,7 +974,12 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       | other | the proof class named in the row's facts | a concrete `file:line` in the source contradicts the premise |
 
    c. Write the dismissals in ONE batch (no per-row subprocess), every reason citing
-      a `file:line` fact: `secguard report --review-json <file.json> --db <abs db>`
+      a `file:line` fact: first write the JSON array to `<file.json>` with the
+      Write tool — **never** inline it through `python3 -c '...'` or a shell heredoc,
+      because a backtick or `$(` inside `review_reasoning` (a quoted C expression
+      like `p->f` or a macro) triggers shell command substitution and the reason
+      lands in the DB already corrupted. Then
+      `secguard report --review-json <file.json> --db <abs db>`
       with `[{"id":<id>,"review_status":"dismissed","review_reasoning":"<file:line +
       why-safe>"}]`. Rows you keep ALSO need a write — batch them as
       `[{"id":<id>,"review_status":"confirmed","review_reasoning":"<premise holds>"}]`
