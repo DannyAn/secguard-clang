@@ -21,7 +21,15 @@ OPENCODE_BASE="${OPENCODE_DIR:-$HOME/.config/opencode}"
 CLAUDE_BASE="${CLAUDE_DIR:-$HOME/.claude}"
 CAC_BASE="${CAC_DIR:-$HOME/.cac}"
 DSH_BASE="${DSH_HOME:-$HOME/.dsh}"
-BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+# 二进制构建到仓库本地 bin/（gitignored）。不部署到 ~/.local/bin 等系统本地
+# 二进制目录（issue #294：不散弹式部署、优先插件路径）——各插件在自己的 bin/ 下
+# 内置一份，运行时从插件目录解析，而不是从全局 PATH 解析。
+BIN_DIR="${BIN_DIR:-$SCRIPT_DIR/bin}"
+# OpenCode 的 findSecguard.ts 按 bin/secguard-<os>-<arch>[.exe] 选择内置二进制。
+PLATFORM_OS="$(sg_detect_os)"
+PLATFORM_ARCH="$(sg_detect_arch)"
+OC_BIN_NAME="secguard-${PLATFORM_OS}-${PLATFORM_ARCH}"
+[ "$PLATFORM_OS" = "windows" ] && OC_BIN_NAME="secguard-${PLATFORM_OS}-${PLATFORM_ARCH}.exe"
 
 OPENCODE_EXT_DIR="$OPENCODE_BASE/extensions/$PRODUCT"
 OPENCODE_PLUGIN_DIR="$OPENCODE_BASE/plugins/$PRODUCT"
@@ -59,7 +67,7 @@ while [[ $# -gt 0 ]]; do
             echo "  CLAUDE_DIR    Default: ~/.claude"
             echo "  CAC_DIR       Default: ~/.cac"
             echo "  DSH_HOME      Default: ~/.dsh"
-            echo "  BIN_DIR       Default: ~/.local/bin"
+            echo "  BIN_DIR       Default: <repo>/bin (dev build, never a system PATH dir)"
             exit 0 ;;
         *)
             echo "Unknown option: $1 (use --help for usage)"; exit 1 ;;
@@ -200,6 +208,11 @@ install_opencode() {
 
     install_skills "$OPENCODE_PLUGIN_DIR/skills"
 
+    if [ "$BINARY_OK" = true ]; then
+        install_binary_copy "$OPENCODE_PLUGIN_DIR/bin/$OC_BIN_NAME"
+        echo "[opencode] Binary → $OPENCODE_PLUGIN_DIR/bin/$OC_BIN_NAME"
+    fi
+
     sg_register_opencode_plugin "$OPENCODE_BASE" "$PRODUCT"
 
     # 清理旧版 opencode extension 的遗留清单（extension.json，已由 package.json 取代）。
@@ -244,6 +257,11 @@ with open(dst, 'w') as f:
     cp "$EXT_DIR/opencode-nga/plugins/"*.ts "$OPENCODE_EXT_DIR/plugins/" 2>&1 || true
 
     install_skills "$OPENCODE_EXT_DIR/skills"
+
+    if [ "$BINARY_OK" = true ]; then
+        install_binary_copy "$OPENCODE_EXT_DIR/bin/$OC_BIN_NAME"
+        echo "[opencode-nga] Binary → $OPENCODE_EXT_DIR/bin/$OC_BIN_NAME"
+    fi
 
     echo "[opencode-nga] Done"
     echo ""
@@ -478,10 +496,9 @@ clean_previous_install() {
 }
 
 # ── Verify the deployed binary + write a deploy manifest ─────
-# Deterministic, single-source check: every installed bin/secguard copy must be
-# byte-identical (same sha256) to the freshly built canonical binary, and
-# `secguard` must resolve on PATH to that canonical copy. A mismatch fails the
-# deploy — no "installed but stale / shadowed by an old copy" surprises.
+# Deterministic, single-source check: every installed plugin bin/ copy must be
+# byte-identical (same sha256) to the freshly built canonical binary. A mismatch
+# fails the deploy — no "installed but stale / shadowed by an old copy" surprises.
 check_bin() {
     local b="$1" want="$2" got
     if [ ! -f "$b" ]; then
@@ -523,11 +540,21 @@ PY
 
 verify_deploy() {
     [ "$BINARY_OK" = true ] || return 0
-    local built_sha built_ver installed="" b resolved
+    local built_sha built_ver installed="" b
     built_sha=$(sha256_file "$BIN_DIR/secguard")
     built_ver=$("$BIN_DIR/secguard" --version 2>/dev/null | head -1 | tr -d '[:space:]')
     echo "[verify] canonical: $BIN_DIR/secguard  sha=${built_sha:0:12}  version=$built_ver"
 
+    case "$PLATFORM" in
+        opencode|all)
+            installed="$installed $OPENCODE_PLUGIN_DIR/bin/$OC_BIN_NAME"
+            ;;
+    esac
+    case "$PLATFORM" in
+        opencode-nga|all)
+            installed="$installed $OPENCODE_EXT_DIR/bin/$OC_BIN_NAME"
+            ;;
+    esac
     case "$PLATFORM" in
         claude-code|all)
             installed="$installed $CLAUDE_PLUGIN_DIR/bin/secguard $CLAUDE_BASE/plugins/cache/local-secguard/$PRODUCT/$VERSION/bin/secguard $CLAUDE_BASE/plugins/marketplaces/local-secguard/$PRODUCT/bin/secguard"
@@ -543,18 +570,6 @@ verify_deploy() {
     for b in $installed; do
         check_bin "$b" "$built_sha"
     done
-
-    resolved=$(command -v secguard 2>/dev/null || true)
-    if [ -z "$resolved" ]; then
-        echo "[verify] ⚠ 'secguard' not on PATH — the AI agent cannot find it"
-        sg_warn_if_not_on_path "$BIN_DIR"
-    elif [ "$resolved" != "$BIN_DIR/secguard" ]; then
-        echo "[verify] ✗ 'secguard' resolves to $resolved, not the canonical $BIN_DIR/secguard"
-        echo "[verify]   a stray copy shadows the fresh binary — remove it or fix PATH order"
-        VERIFY_FAILED=true
-    else
-        echo "[verify] ✓ PATH: secguard → $BIN_DIR/secguard"
-    fi
 
     write_deploy_manifest "$built_ver" "$built_sha" "$installed"
     echo ""
@@ -667,7 +682,7 @@ case "$PLATFORM" in
         echo "║  DSH agent preset:"
         echo "║    $DSH_PRESET_DIR/"
         echo "║      preset.yml, agent.cordis.yml, skills/*/SKILL.md"
-        echo "║    Select 'SecGuard 安全审计' in DSH; secguard runs from PATH ($BIN_DIR)"
+        echo "║    Select 'SecGuard 安全审计' in DSH; secguard runs from PATH (dev build: $BIN_DIR/secguard)"
         ;;
 esac
 
