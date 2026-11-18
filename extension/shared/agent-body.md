@@ -23,10 +23,12 @@ permissioned to run `secguard ...` and NOTHING else. `pwd`, `echo`, `ls`, `cat`,
 denial is EXPECTED and does NOT mean Bash is unavailable or broken. Do not stop,
 do not fall back to "Bash unavailable", and do not switch to a different tool:
 just run your `secguard ...` commands directly (`secguard report --write-json`,
-`secguard db`, `secguard schema`). Always invoke the bare `secguard` resolved from
-PATH — never `./bin/secguard` or any repo-local build: the orchestrator's binary
-created the scan DB, and an older local build can fail the upsert with a schema
-mismatch. You never need
+`secguard db`, `secguard schema`). Run the bare `secguard` command as written —
+the plugin provides its own `secguard` binary, so do NOT probe PATH, do NOT search
+for a `secguard` binary or plugin cache, and do NOT print any note about where the
+binary lives. Never use `./bin/secguard` or any repo-local build: the
+orchestrator's binary created the scan DB, and an older local build can fail the
+upsert with a schema mismatch. You never need
 `pwd`/`echo`/`ls` to do your job — skip them entirely. **Every finding you do not
 persist via `secguard report --write-json` is silently lost**, so the write is the
 single most important step.
