@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 )
 
 func (s *store) InsertLocation(ctx context.Context, loc *Location) (int64, error) {
@@ -36,32 +35,15 @@ func (s *store) GetLocationByID(ctx context.Context, id int64) (*Location, error
 }
 
 func (s *store) ListLocationsByIDs(ctx context.Context, ids []int64) (map[int64]*Location, error) {
-	result := make(map[int64]*Location, len(ids))
-	for _, chunk := range chunkIDs(ids, 500) {
-		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
-		args := make([]interface{}, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
-		rows, err := s.exec.QueryContext(ctx,
-			`SELECT id, file_id, line, column FROM locations WHERE id IN (`+placeholders+`)`, args...)
-		if err != nil {
-			return nil, fmt.Errorf("db: list locations by ids: %w", err)
-		}
-		for rows.Next() {
+	return listByIDs(ctx, s.exec, ids, "list locations by ids",
+		`SELECT id, file_id, line, column FROM locations WHERE id IN (`,
+		func(rows *sql.Rows) (int64, *Location, error) {
 			loc := &Location{}
-			if scanErr := rows.Scan(&loc.ID, &loc.FileID, &loc.Line, &loc.Column); scanErr != nil {
-				rows.Close()
-				return nil, fmt.Errorf("db: scan location: %w", scanErr)
+			if err := rows.Scan(&loc.ID, &loc.FileID, &loc.Line, &loc.Column); err != nil {
+				return 0, nil, fmt.Errorf("db: scan location: %w", err)
 			}
-			result[loc.ID] = loc
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("db: list locations by ids: %w", err)
-		}
-	}
-	return result, nil
+			return loc.ID, loc, nil
+		})
 }
 
 func (s *store) ListLocationsByFile(ctx context.Context, fileID int64) ([]*Location, error) {
