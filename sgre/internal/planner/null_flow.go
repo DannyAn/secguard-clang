@@ -2846,6 +2846,13 @@ type fileParseCache struct {
 	// bounds how many files' ASTs this cache may pin at once. Without it,
 	// ParseCached's own max_cached_trees was decorative: every borrowed tree
 	// here was unevictable there, so a whole-repo filter could pin GBs.
+	//
+	// maxEntries follows the parser's configured max_cached_trees (0 =
+	// unbounded) rather than a fixed constant. A smaller, hardcoded value
+	// evicted files whose trees were still resident in the parser cache, so the
+	// flow filters re-read and re-walked the same files over and over on any
+	// codebase larger than the magic number — pure thrash with no memory win,
+	// since the parser cache already bounds tree memory at max_cached_trees.
 	order      []int64
 	maxEntries int
 }
@@ -2859,7 +2866,7 @@ func newFileParseCache(p *parser.Parser) *fileParseCache {
 		bodies:     make(map[int64]map[int]parser.Node),
 		defs:       make(map[int64]map[int]parser.Node),
 		trees:      make(map[int64]*parser.Tree),
-		maxEntries: 256,
+		maxEntries: p.MaxCachedTrees(),
 	}
 	if _, file, line, ok := runtime.Caller(1); ok {
 		liveFileParseCaches.Store(fc, fmt.Sprintf("%s:%d", file, line))
