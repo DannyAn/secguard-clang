@@ -79,28 +79,8 @@ func (d *LogInjectionDetector) detectLogInjection(ctx context.Context, f *db.Fun
 
 func logTaintVariable(callName string, args []string) string {
 	switch callName {
-	case "syslog", "vsyslog":
-		for i := 2; i < len(args); i++ {
-			arg := strings.TrimSpace(args[i])
-			if isStringLiteral(arg) {
-				continue
-			}
-			if v := bareIdentString(arg); v != "" {
-				return v
-			}
-			return strings.TrimSpace(arg)
-		}
-	case "fprintf":
-		for i := 2; i < len(args); i++ {
-			arg := strings.TrimSpace(args[i])
-			if isStringLiteral(arg) {
-				continue
-			}
-			if v := bareIdentString(arg); v != "" {
-				return v
-			}
-			return strings.TrimSpace(arg)
-		}
+	case "syslog", "vsyslog", "fprintf":
+		return firstFormatTaintArg(args, 2)
 	case "fputs":
 		if len(args) >= 1 {
 			arg := strings.TrimSpace(args[0])
