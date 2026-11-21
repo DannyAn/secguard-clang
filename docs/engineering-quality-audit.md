@@ -15,7 +15,7 @@
 >
 > **复核修正**：初版报告把 Crapper / Dryer / Mutator 记为“未安装”，这是错误的——三者一直在 `~/.local/bin`，现在已用于复核；初版的复杂度/CRAP/重复率结论已按工具输出修正，并新增了静态检查、变异测试与系统性重复的证据。详细修正见 §3.7。
 >
-> **阶段二执行状态（2026-11-21）**：已完成 U1、U2、U1b、U4a、U4c、U8、U5、U7a、U4d、U6、U4b（evidence 遍历部分）；U3a/U3b、M-07、U7b、M-12、L-03/L-04 等大型结构/测试改造尚未完成。PR #309 已合入；后续批次在新 PR。§6 L-01 保留审计时的清单描述。
+> **阶段二执行状态（2026-11-21）**：PR #309（批次 1–4，merge `79986b8`）与 PR #310（批次 5，merge `b8ee94d`）已合入 main；本批新增 M-07 的 chunked `List*ByIDs` 统一（commit `5e896ac`）。剩余 U3a/U3b、M-07 其余模板、U7b、U4b graph 侧、M-12、L-03/L-04 见 §9/§10。§6 L-01 保留审计时的清单描述。
 
 ---
 
@@ -624,12 +624,217 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | U4b 文件遍历骨架统一 | 部分完成 | evidence 三变体已收敛到 `forEachParsedFile`；graph 副本仍受 RepoIndex 跨包边界限制 |
 | U4d 数据流加载器统一 | 完成 | `loadVarRefMaps` 单源；DATA_FLOW/ALIAS/RELEASE 加载器只保留边处理 |
 | U6 中型去重 | 完成 | `buildRangeFlowsForCandidates`、`collectFileScope`、`classifyUnsignedCompare`、`firstFormatTaintArg`、`scanUsageTargets` |
-| M-07 DB 模板去重 | 未完成 | Dryer 62 对大块都在 internal/db；需统一 List/scan/chunk 模板 |
+| M-07 DB 模板去重 | 部分完成 | `listByIDs` 统一 4 个 chunked `List*ByIDs`（commit `5e896ac`）；其余 scan/CRUD 模板与 Dryer 大块未做 |
 | U7b runReportCmd 拆分 | 未完成 | 1,472 行、10 个模式；需先建 golden 输出，属独立大型 PR |
 | M-12 源文件重复读取 | 未完成 | 需在大语料量化 I/O 后再决定缓存方案 |
 | L-03/L-04 基准与 CWE parity | 未完成 | 0 个 Benchmark；db 默认 CWE 集合仍需 parity 测试 |
 
-**验证基线（本批全部改动）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**，与改动前一致。工作区 63 个已跟踪文件变更（+267/−558）+ 5 个新文件，均未提交。
+**验证基线（合入 main + 本批 M-07）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。历史批次 #309/#310 已合入 main `b8ee94d`；本批在 main 上新增 M-07 commit `5e896ac`。
+
+
+---
+
+## 10. 回放实施手册（给其他 fork）
+
+> 目标：让另一个 fork 不必重新做审计，也能按顺序复现/实施已确认的治理单元，并用同一组门禁证明行为未变。**不要**把本报告当成“改几行就完事”的清单：每个单元都先建立基线，再改一个独立单元，最后用命令验收。
+
+### 10.1 前置条件与环境
+
+| 项 | 要求 |
+|---|---|
+| Go | 1.25.x（审计/实现基线为 1.25.3；`go.mod` 是 `go 1.25.0`） |
+| CGO | 必须开启（tree-sitter C 解析器）；需要 C 编译器 |
+| SQLite | 代码使用 `modernc.org/sqlite`（纯 Go）；测试与扫描需要可写临时目录 |
+| Python | 基准校验脚本 `examples/c-vuln-benchmark/scripts/validate-benchmark.py` 需要 Python 3 |
+| 工具（可选） | `golangci-lint`、`staticcheck`、`gocyclo`、`gocognit`、`dupl`；Crapper/Dryer/Mutator 若可用更好 |
+| 目录 | `sgre/` 是 Go module；所有 `go` 命令在 `sgre/` 下执行 |
+| 数据 | 基准语料 `examples/c-vuln-benchmark/`；无需 AI 分类即可跑 CI 门禁 |
+
+建议的 fork 初始基线（先确认你自己的 fork 与下列预期一致，再开始改）：
+
+```bash
+cd sgre
+go build -buildvcs=false ./...
+go vet -buildvcs=false ./...
+go test -buildvcs=false -count=1 ./...
+go test -buildvcs=false -tags nosqlite ./internal/log/ ./internal/planner/ ./internal/db/
+staticcheck ./...
+gofmt -l cmd internal testdata          # 应为空
+```
+
+审计基线（`c6887e6`）：全量测试通过、race 无数据竞争、合并覆盖率 **82.3%**、golangci 默认截断 85（关闭上限 821）、staticcheck 30、gofmt 28。治理后（main `b8ee94d` + M-07 `5e896ac`）：staticcheck **0**、gofmt **0**、unused **0**、基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF、263 passed**、默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。
+
+### 10.2 回放方式（三选一）
+
+**A. Cherry-pick 已合入的上游提交（最快，但要求 fork 与上游足够接近）**
+
+```bash
+git remote add upstream https://github.com/DannyAn/secguard-clang.git
+git fetch upstream main
+git checkout -b quality-replay upstream/main
+# 代码提交（按顺序）
+git cherry-pick a12c78d   # batch1: U1/U2/U1b/U4a/U4c/U5/U7a/U8
+git cherry-pick abe22c7   # batch2: U4d/U6 range+scope
+git cherry-pick 44ea5b2   # batch3: U4b evidence traversal
+git cherry-pick d8a33f5   # batch4: U6 signed/injection helpers
+git cherry-pick 4cf10a0   # batch5: U6 unchecked-return helper
+git cherry-pick 5e896ac   # M-07 chunked List*ByIDs
+# 文档提交可按需 cherry-pick：ba05a99、faa51a6、0c3a331，或直接保留本报告
+```
+
+若 cherry-pick 冲突：停下，先跑 10.3 的基线；冲突说明 fork 的代码布局已偏离审计基线，改用方式 C，不要强行合。
+
+**B. 从合并后的 main 取差异（适合 fork 只是跟随上游）**
+
+```bash
+git fetch upstream main
+git diff c6887e6..b8ee94d -- sgre .github > /tmp/quality-remediation.patch
+git apply --3way /tmp/quality-remediation.patch
+```
+
+再补本批 M-07（`git show 5e896ac | git apply --3way`）。补丁不包含本报告时，从上游拷 `docs/engineering-quality-audit.md`。
+
+**C. 逐单元手工实施（适合 fork 已大幅偏离）**
+
+按 §10.4/§10.5 的单元卡逐条做：每个卡都给出证据位置、最小改动、验收命令、回滚方式。**一次只做一个单元**，做完立即跑门禁并提交；不要把所有单元混成一个无法回滚的提交。
+
+### 10.3 全局验收门禁（每个单元后都跑）
+
+```bash
+cd sgre
+go build -buildvcs=false ./...
+go vet -buildvcs=false ./...
+go test -buildvcs=false -count=1 ./...
+go test -buildvcs=false -tags nosqlite ./internal/log/ ./internal/planner/ ./internal/db/
+staticcheck ./...
+gofmt -l cmd internal testdata          # 必须为空
+```
+
+行为/输出门禁（与基线逐项比较，任何差异都停下来解释）：
+
+```bash
+# 1) 基准召回（CI 的 canonical 命令；输出全部写 /tmp，不写仓库）
+BENCH=/tmp/quality-bench
+rm -rf "$BENCH" && mkdir -p "$BENCH"
+cp -r examples/c-vuln-benchmark/src "$BENCH/"
+cd "$BENCH"
+"$REPO/bin/secguard" --config "$REPO/examples/c-vuln-benchmark/benchmark-secguard.toml" \
+  scan . --db "$BENCH/sgre.db" > scan.log 2>&1
+SCAN_ID=$(ls .codeagent/secguard-clang/scans | grep -v latest | head -1)
+"$REPO/bin/secguard" report --audit --scan-id "$SCAN_ID" \
+  --output-dir "$BENCH/.codeagent/secguard-clang/scans/$SCAN_ID" \
+  --db "$BENCH/sgre.db" --allow-partial > audit.log 2>&1
+python3 "$REPO/examples/c-vuln-benchmark/scripts/validate-benchmark.py" \
+  --root "$BENCH" --expected "$REPO/examples/c-vuln-benchmark/expected-results.json" --json
+# 期望：recall 132/132, false_positives=0, false_negatives=0, candidate_findings=193, sarif_findings=40
+
+# 2) 默认扫描 shape（与 CI 基准不同的配置，不要混用）
+rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_000000_abcdef
+"$REPO/bin/secguard" scan examples/c-vuln-benchmark \
+  --db /tmp/quality-default/sgre.db \
+  --output-dir /tmp/quality-default/sc_2026-11-21_000000_abcdef
+# 期望：185 candidates, 40 auto-confirmed, candidates.sarif: 2.1.0 / 185 results / 28 ruleId
+```
+
+禁止/避免：
+
+- 不改 `CHANGELOG.md`、`VERSION`、`sgre/internal/cli/root.go` 的版本 fallback、`report/protocol.go` 的 `ToolVersion`。
+- 不改 SARIF schema、Finding 字段语义、结果排序/去重/证据生成规则。
+- 不升级依赖；不为了降低指标机械拆分函数。
+- 每个 PR 保持“检测语义、CLI、SARIF、基准召回”不变；如果确实要改变行为，必须单独授权并更新期望值。
+- `--output-dir` 的 basename 必须是 `sc_YYYY-MM-DD_HHMMSS_xxxxxx`，否则 CLI 直接拒绝。
+
+### 10.4 已完成单元（可直接对照/回放）
+
+| 单元 | 提交 | 关键改动 | 最小验收 |
+|---|---|---|---|
+| U1 死代码 | `a12c78d` | 删除 18 个 U1000 函数 + `internal/agent` 死包；删除 `edgeBatchWriter.flushed`（唯一读者已删） | `staticcheck` U1000=0；全测试 |
+| U2 静默遍历错误 | `a12c78d` | 3 个 collect 返回/传播 `forEachFile*` error；`traversal_error_test.go` 5 个故障注入测试 | 新测试 + 全测试 + 基准 |
+| U1b 格式化/静态小项 | `a12c78d` | gofmt 28→0、staticcheck 30→0、parser.SetLanguage error、settlement 死查询、ineffassign/gosimple | `gofmt -l` 空、`staticcheck` 0 |
+| U4a 空指针语义单源 | `a12c78d` | `parser.IsNullLiteral`/`ExprNullChecksParam`；删除 evidence/planner 副本 | parser 测试 + 检测器测试 |
+| U4c worktree 单源 | `a12c78d` | `git.EnclosingWorktree`；删 cli/repofacts 副本 | `go test ./internal/git` |
+| U8 ctx 贯穿 | `a12c78d` | `returnSummaryResolver.ctx`；`funcNonZero` 用 `r.ctx` | 全测试 + 基准 |
+| U5 CI 门禁 | `a12c78d` | `.github/workflows/go-quality.yml`（gofmt+vet+test+staticcheck） | workflow 2/2 green |
+| U7a uninit 参数层 | `a12c78d` | `uninitScanInputs` 替代 20/14/13 位置参数；函数体未拆 | uninit/全测试 + 基准 |
+| U4d 数据流加载器 | `abe22c7` | `loadVarRefMaps` 单源 | null/UAF/double-free 测试 + 基准 |
+| U6 range/detector | `abe22c7` | `buildRangeFlowsForCandidates`、`collectFileScope` | range/detector 测试 + 基准 |
+| U4b evidence 遍历 | `44ea5b2` | `forEachParsedFile` 统一三变体 | 全 evidence 测试 + 基准 |
+| U6 signed/injection | `d8a33f5` | `classifyUnsignedCompare`、`firstFormatTaintArg` | 相关检测器测试 + 基准 |
+| U6 unchecked-return | `4cf10a0` | `scanUsageTargets`；删未读 `freed` | 相关检测器测试 + 基准 |
+| M-07 chunked List | `5e896ac` | `listByIDs` 统一 4 个 `List*ByIDs` | `go test ./internal/db` + 全测试 + 基准 |
+
+回滚：每个单元可以用 `git revert <commit>` 或恢复该单元涉及的文件；已合入的提交都在 main 历史中，revert 后必须重跑 10.3 全部门禁。U1b 的 `parser.SetLanguage` 错误处理只在“语言版本不匹配”时改变行为，回滚时注意保留 error 语义。
+
+### 10.5 剩余单元执行卡（未完成，按卡实施）
+
+#### U3a 测试错误传播基座（规模大，纯测试）
+
+- **证据**：`grep -rn '\.Build(ctx)$' internal --include='*_test.go'` 约 383 处；`security_test.go:88-124` 连续忽略 13 个 `Detect`；golangci 默认上限下 48 条测试 errcheck，关闭上限 765 条。
+- **做法**：在 `internal/planner`、`internal/evidence` 等包的 `*_test.go` 增加 `mustBuild(t, func() error)`/`mustDetect(t, det)`；按包替换裸调用；`Build` 若返回 `(int,error)`，用闭包包一层；不要改变测试意图。
+- **验收**：每个包 `go test ./internal/<pkg> -count=1`；最终全测试 + 基准不变。建议按包提交，单包失败不阻塞其他包。
+- **风险**：测试变慢/个别测试原来依赖“builder 失败但测试继续”；先跑基线再改。
+
+#### U3b 零覆盖检测路径（需要设计用例）
+
+- **证据**：`relationalNonZeroVar`（divide_by_zero）、`cfgBuilder.buildDo`（do-while CFG）、`BuildPlanSummary`、`SubprocessRunner.Run` 等。
+- **做法**：用现有 `sgre/testdata` 夹具或新增最小 C fixture；测试断言候选/事件/CFG 结果，而不是内部实现。
+- **验收**：`-coverpkg=./...` 合并覆盖率提升；全测试 + 基准不变。
+- **风险**：新增夹具可能改变基准候选数；只在临时目录/独立测试中运行，不加入 benchmark 语料。
+
+#### M-07 剩余 DB 模板
+
+- **证据**：Dryer 107 对大块中 62 对两侧都在 `internal/db`；`listByIDs` 只统一了 4 个 chunked `List*ByIDs`。
+- **做法**：继续抽 `scan*`/`List*` 的 rows 生命周期（`scanEvents`、`scanLocations` 等），保留每实体 SQL；不要合并只是“数据形状相似”的查询。
+- **验收**：`go test ./internal/db` + 全测试 + 基准；Dryer 复跑确认大块下降。
+- **风险**：SQL 列/扫描目标差异；空 ids、>500 ids、扫描失败、事务内读必须覆盖。
+
+#### U7b `runReportCmd` 拆分（大型，需 golden）
+
+- **证据**：`internal/cli/report.go:317`，1,472 行、10 个布尔模式、23 个字符串 flag。
+- **做法**：先为 `--list/--list-auto-confirmed/--write/--write-json/--audit/--review/--stats` 各建 golden 输出（JSON 字段集、SARIF、DB 写入顺序）；再抽 `runReportListAutoConfirmed`/`runReportWrite`/`runReportAudit`/`runReportReview`/`runReportStats`；入口只保留参数解析和 DB 打开。
+- **验收**：golden 逐字节/逐字段一致；`report --audit` 端到端；基准 SARIF 不变。
+- **风险**：DB 写入顺序、JSON 省略规则、SARIF 排序；这是独立大型 PR，不要与去重混在一起。
+
+#### U4b graph 侧遍历副本
+
+- **证据**：`graph/helpers.go:27` 仍复制 evidence 的遍历骨架；不能直接 import evidence（分层反向）。
+- **做法**：把 RepoIndex/file 遍历下沉到不依赖 graph 的小包，或让 graph 的遍历接受一个 file source 回调；不要让 graph import evidence。
+- **验收**：graph 构建器测试 + 全测试 + 基准。
+- **风险**：RepoIndex 上下文/日志前缀语义；先证明行为一致。
+
+#### M-12 源文件 I/O
+
+- **做法**：先在较大语料（`sgre/testdata/perf/gen_codebase.go` 生成）测量 detector 阶段 `os.ReadFile` 占比；若显著，再加有界源字节缓存（受 parser LRU/内存水位约束），不要先改。
+- **验收**：扫描耗时对比 + RSS；行为不变。
+
+#### L-03/L-04
+
+- L-03：为 index/graph/detector/plan 增加 `Benchmark*`，复用 `testdata/perf`；`go test -bench` 记录基线，不进入默认 CI。
+- L-04：在 `db_test`（外部测试包，可 import `planner`）加默认 CWE 集合与 `planner.AllCWEs()` 的 parity 测试；不要在生产代码硬编码第二份 CWE 表。
+
+### 10.6 常见坑（回放时最容易踩）
+
+1. **golangci 默认会截断**：`--max-issues-per-linter 50`、`--max-same-issues 3`；审计数字 85 不是全量，关闭上限才看到 821。
+2. **Crapper 的 Go 覆盖率是各包自测**，不是 `-coverpkg=./...` 合并值；`SharedAccessBuilder.Build` 这类跨包集成函数会被误报 0%。
+3. **Dryer 是结构相似度**：`apikb` 数据表里 4 行 score=1.0 的命中不应当合并；只处理“语义应当唯一”的重复。
+4. **Mutator 只做了两个定向文件**：`signed_compare.go` 76/76、`filter_range_oob.go` 82/82 killed；不是全仓变异分数。
+5. **基准配置 vs 默认配置**：benchmark 配置是 193 候选，默认是 185；不要把两者混为同一基线。
+6. **SARIF 两阶段**：`candidates.sarif` 是未分类 lead（level=note）；`result.sarif` 由 `report --audit` 在 AI 判定后生成；不要用前者断言 verdict。
+7. **Draft PR 不能 merge**：需要 `gh pr ready <n>`；本仓库要求人合并，不启用 auto-merge。
+8. **worktree / 生成目录**：不要编辑 `.claude/`、`.opencode/`、`.codeagent/`、`dist/`；审计/回放只在 `sgre/` 与 `extension/shared/`（若涉及）。
+9. **Go 1.25 gofmt**：旧版本格式化的文件会被新版 gofmt 标记；U1b 的一次性格式化要单独提交，避免和逻辑改动混在一起。
+10. **无 VCS 构建**：CI/临时 worktree 用 `-buildvcs=false`，否则可能报 `error obtaining VCS status`。
+
+### 10.7 完成检查清单（每个 fork/每个单元）
+
+- [ ] 先记录 `git status`、当前 commit、完整测试与基准结果。
+- [ ] 只改一个独立单元；改动文件/函数与报告证据一致。
+- [ ] 新增/调整测试；失败测试先复现，再修。
+- [ ] 跑 10.3 全部门禁；与基线比较候选数、SARIF、召回。
+- [ ] `git diff` 只含预期改动；`git diff --check` 通过。
+- [ ] 不含 `CHANGELOG.md`/`VERSION`/依赖/输出 schema 变更。
+- [ ] PR 描述写明问题证据、改动、验证命令与结果、剩余风险。
+- [ ] 自动审查意见按“先验证再处理”评估，不盲从；人负责合并。
 
 ---
 
