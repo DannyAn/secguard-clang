@@ -20,7 +20,7 @@ func init() {
 		EvidenceType:     "INJECTION",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "injection",
-		FilterFactories:    chainTaint(),
+		FilterFactories:  chainTaint(),
 		// The taint-source filter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,
 		ConvergeKey: func(c Candidate) string {

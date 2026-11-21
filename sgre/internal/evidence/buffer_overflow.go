@@ -2307,7 +2307,7 @@ func suppressExactFitCopy(bc *bufCtx, f *db.Function, call parser.Node) bool {
 func (d *BufferOverflowDetector) suppressReadFamily(bc *bufCtx, f *db.Function, call parser.Node, callName string) bool {
 	args := callNamedArguments(call)
 	var dstArg parser.Node
-	byteSize := -1 // -1 unknown, -2 = sizeof(dst) (always fits)
+	var byteSize int // assigned in every non-returning branch; -2 = sizeof(dst)
 	switch callName {
 	case "read", "recv":
 		if len(args) < 3 {

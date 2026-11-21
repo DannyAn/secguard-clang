@@ -368,14 +368,14 @@ type ScanIncompleteTask struct {
 // authoritative resume state — the orchestrator queries it to decide which
 // types still need classification after an interrupted scan.
 type PerTypeStatus struct {
-	VulnType       string `json:"vuln_type"`
-	CWE            string `json:"cwe"`
+	VulnType string `json:"vuln_type"`
+	CWE      string `json:"cwe"`
 	// SeedCount is the raw detector-seed count for this type (scan_stats.seed_count),
 	// before the convergence filter chain and location dedup. It is the raw
 	// denominator the orchestrator reconciles candidate_count against.
-	SeedCount      int    `json:"seed_count"`
-	CandidateCount int    `json:"candidate_count"`
-	WrittenCount   int    `json:"written_count"`
+	SeedCount      int `json:"seed_count"`
+	CandidateCount int `json:"candidate_count"`
+	WrittenCount   int `json:"written_count"`
 	// AutoConfirmed is the count of findings the pipeline wrote straight to
 	// findings/ as `auto-confirmed` (machine verdict) for this type.
 	AutoConfirmed int `json:"auto_confirmed"`

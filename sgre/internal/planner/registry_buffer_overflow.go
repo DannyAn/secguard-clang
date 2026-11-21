@@ -199,7 +199,6 @@ func bufferFlowSteps(c Candidate) []EvidenceFragment {
 			Detail: fmt.Sprintf("[%d] no bounds check dominates this access — the guard that would keep `%s` within [0, %d) is missing (or compares against a different bound)",
 				n, idx, c.Size),
 		})
-		n++
 	}
 	steps = append(steps, EvidenceFragment{
 		Type:   "flow_step",

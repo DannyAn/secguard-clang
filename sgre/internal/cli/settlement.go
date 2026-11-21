@@ -137,9 +137,8 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 			if !rep.Valid || rep.ScanID == "" {
 				continue
 			}
-			known, ok := knownByScan[rep.ScanID]
-			if !ok {
-				known = map[string]bool{}
+			if _, ok := knownByScan[rep.ScanID]; !ok {
+				known := map[string]bool{}
 				counts := map[string]int{}
 				stats, err := tx.ListScanStats(ctx, rep.ScanID)
 				if err != nil {
@@ -197,20 +196,9 @@ func persistSettlementReports(ctx context.Context, store db.Store, res reportsRe
 				touched[scanType{rep.ScanID, pt.Type}] = true
 			}
 		}
-		rowsByScan := map[string][]*db.SettlementStat{}
-
 		for key := range touched {
 			if !knownByScan[key.scanID][key.vulnType] {
 				continue
-			}
-			rows, ok := rowsByScan[key.scanID]
-			if !ok {
-				var err error
-				rows, err = tx.ListSettlementStatsByScan(ctx, key.scanID)
-				if err != nil {
-					return err
-				}
-				rowsByScan[key.scanID] = rows
 			}
 			// Type completion is derived from the VERDICT LEDGER (unclassified
 			// == 0), the same identity --complete-type and the audit gate use —

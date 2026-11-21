@@ -233,8 +233,8 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 	b.WriteString(fmt.Sprintf("- SARIF (verdict stage, written by `report --audit`): `%s`\n", SarifFile))
 	b.WriteString(fmt.Sprintf("- Candidate evidence (pipeline output, NOT verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>.md`\n", CandidatesDir))
 	b.WriteString(fmt.Sprintf("- Findings to review (AI verdicts): `%s/<vuln-type>/<NNN>_<file>_<line>_confirmed.md`\n", FindingsDir))
-	b.WriteString(fmt.Sprintf("  — written after AI classification. Dismissed (false-positive) entries never appear here; their verdict is recorded in the database and on the candidate file.\n"))
-	b.WriteString(fmt.Sprintf("- Database: `.sgre/sgre.db`\n"))
+	b.WriteString("  — written after AI classification. Dismissed (false-positive) entries never appear here; their verdict is recorded in the database and on the candidate file.\n")
+	b.WriteString("- Database: `.sgre/sgre.db`\n")
 
 	return os.WriteFile(o.ReportPath, []byte(b.String()), 0644)
 }
@@ -453,7 +453,7 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 
 			b.WriteString("## Pipeline Assessment\n\n")
 			b.WriteString(fmt.Sprintf("- **Suspicion Level (pipeline prior, not a verdict):** %s\n", c.SuspicionLevel))
-			b.WriteString(fmt.Sprintf("- **AI Verdict:** _unclassified_\n"))
+			b.WriteString("- **AI Verdict:** _unclassified_\n")
 			b.WriteString("\n")
 
 			b.WriteString("## Fix Suggestion\n\n")

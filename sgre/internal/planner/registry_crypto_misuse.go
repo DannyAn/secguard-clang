@@ -11,7 +11,7 @@ func init() {
 		EvidenceType:      "CRYPTO_MISUSE",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "default",
-		FilterFactories:    chainDefault(),
+		FilterFactories:   chainDefault(),
 		BuildVerdictFacts: buildCryptoMisuseVerdictFacts,
 		// weak_algorithm (DES/MD5/SHA1/RC4), weak_random (rand/srand) and
 		// undersized_key name a primitive that IS weak, but whether that is a

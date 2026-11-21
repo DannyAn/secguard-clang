@@ -34,11 +34,11 @@ func TestScanTypeFilter_NarrowsPlanAndEchoesScope(t *testing.T) {
 		t.Fatalf("filtered scan failed: code=%d out=%s", code, stdout)
 	}
 	var out struct {
-		TypeFilter    []string          `json:"type_filter"`
-		AppliedTypes  []string          `json:"applied_types"`
-		Candidates    map[string]int    `json:"candidates_by_type"`
-		Completion    string            `json:"completion_state"`
-		DisabledTypes []string          `json:"disabled_types"`
+		TypeFilter    []string       `json:"type_filter"`
+		AppliedTypes  []string       `json:"applied_types"`
+		Candidates    map[string]int `json:"candidates_by_type"`
+		Completion    string         `json:"completion_state"`
+		DisabledTypes []string       `json:"disabled_types"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
 		t.Fatalf("scan output is not JSON: %v\n%s", err, stdout)

@@ -1522,7 +1522,14 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 			}
 		}
 	}
-	nonNullReturn := collectNonNullReturns(ctx, d.store, d.parser, d.logger, collectNoreturnFuncs(ctx, d.store, d.parser, d.logger))
+	noreturn, err := collectNoreturnFuncs(ctx, d.store, d.parser, d.logger)
+	if err != nil {
+		return nil, err
+	}
+	nonNullReturn, err := collectNonNullReturns(ctx, d.store, d.parser, d.logger, noreturn)
+	if err != nil {
+		return nil, err
+	}
 	return &funcSummaries{passthrough: passthrough, nullRejectParams: nullReject, paramNullSafe: nullSafe, fieldNullChecks: fieldChecks, nonNullReturn: nonNullReturn}, nil
 }
 
@@ -1537,7 +1544,7 @@ func (d *UncheckedReturnDetector) funcSummaries(ctx context.Context) (*funcSumma
 // The facts are collected in ONE tree pass and the fixpoint then runs in memory:
 // the previous per-iteration re-scan re-read and re-walked every file once per
 // fixpoint step, which on a large tree (redis: 216 files) added tens of seconds.
-func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) map[string]bool {
+func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (map[string]bool, error) {
 	noreturn := make(map[string]bool, len(apikb.NoReturnCalls))
 	for name := range apikb.NoReturnCalls {
 		noreturn[name] = true
@@ -1550,7 +1557,7 @@ func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 	callsOf := make(map[string]map[string]bool)
 	var fpGlobals []struct{ name, init string }
 
-	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	err := forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		returns := root.FindAll("return_statement")
 		calls := root.FindAll("call_expression")
 		for _, fn := range funcs {
@@ -1587,6 +1594,9 @@ func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 			}
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	// In-memory monotone fixpoint: no-return functions whose callees are all
 	// noreturn, and function-pointer globals pointing at a noreturn target.
@@ -1611,15 +1621,15 @@ func collectNoreturnFuncs(ctx context.Context, store db.Store, p *parser.Parser,
 			}
 		}
 	}
-	return noreturn
+	return noreturn, nil
 }
 
 // collectNonNullReturns returns the set of function names that never return NULL
 // via the abort-on-OOM contract: they return a variable NULL-checked with a
 // never-returning consequence (`p = alloc(); if (!p) oom_handler(); return p;`).
-func collectNonNullReturns(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, noreturn map[string]bool) map[string]bool {
+func collectNonNullReturns(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, noreturn map[string]bool) (map[string]bool, error) {
 	out := make(map[string]bool)
-	_ = forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	err := forEachFileIncludingEmpty(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// Hoisted once per file: the previous form re-walked the whole file AST
 		// (return_statement + if_statement FindAll) per function.
 		returns := root.FindAll("return_statement")
@@ -1665,7 +1675,10 @@ func collectNonNullReturns(ctx context.Context, store db.Store, p *parser.Parser
 			}
 		}
 	})
-	return out
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // callsNoreturn reports whether node (a guard consequence) contains a call to a

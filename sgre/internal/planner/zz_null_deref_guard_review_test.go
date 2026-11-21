@@ -57,15 +57,6 @@ func candidateLines(t *testing.T, result *PlanResult, fn string) []int {
 	return lines
 }
 
-func hasLine(lines []int, want int) bool {
-	for _, l := range lines {
-		if l == want {
-			return true
-		}
-	}
-	return false
-}
-
 const guardReviewPreamble = `#include <stdlib.h>
 
 typedef struct S { int x; int y; } S;

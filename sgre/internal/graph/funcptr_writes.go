@@ -46,8 +46,7 @@ func (b *FuncPtrWriteBuilder) Build(ctx context.Context) error {
 	}
 
 	var writes []db.FuncPtrWrite
-	var err error
-	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, _ []*db.Function) {
+	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, _ []*db.Function) {
 		for _, assign := range root.FindAll("assignment_expression") {
 			named := assign.NamedChildren()
 			if len(named) < 2 {

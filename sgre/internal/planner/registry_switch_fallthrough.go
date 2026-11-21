@@ -17,7 +17,7 @@ func init() {
 		// (or the missing member) are independent semantic actions.
 		Categories: []string{"fallthrough", "missing_default"},
 		CategoryCWEs: map[string]string{
-			"fallthrough":    "CWE-484",
+			"fallthrough":     "CWE-484",
 			"missing_default": "CWE-478",
 		},
 		BuildVerdictFacts: buildSwitchFallthroughVerdictFacts,

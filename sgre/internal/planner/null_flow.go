@@ -315,14 +315,6 @@ func loopBoundGuardAt(entries []ternaryGuardEntry, variable string, line int) bo
 	return false
 }
 
-// mustReaching reports whether the fact holds on EVERY path to line (the boolean
-// must tier). It is the freed-state / uninit analogue of reachingDefinite: used
-// to promote a may-reachable candidate to "confirmed" only when the fact is not
-// merely possible but provable on all paths.
-func (m *flowResult) mustReaching(variable string, line int) bool {
-	return m.mustReachingAt(variable, line, 0)
-}
-
 // mustReachingAt is mustReaching with the sink's COLUMN (see
 // graph.StmtCFG.NodeAtColumn): two statements sharing ONE line (a failure
 // return and a cleanup free) resolve to different CFG nodes, so the must-flow
@@ -588,7 +580,7 @@ func (a *flowAnalyzer) analyzeDefiniteNull(cfg *graph.StmtCFG, fileRoot parser.N
 				}
 				e.killBase[name] = true
 			}
-			if isNullLiteralNode(p.rhs) {
+			if parser.IsNullLiteral(p.rhs) {
 				// A definite-null fact is only reliable for a SIMPLE local
 				// (`p = NULL`, `int *p = NULL`): a field access or subscript
 				// (`config.cluster_nodes = NULL`, `arr[i] = NULL`) names a
@@ -1410,7 +1402,7 @@ func collectCountOutputFuncs(cache *fileParseCache, funcs []*db.Function, fileBy
 			if !isParam {
 				continue
 			}
-			if isNullLiteralNode(rhs) {
+			if parser.IsNullLiteral(rhs) {
 				zeroed[idx] = true
 			}
 		}
@@ -1420,7 +1412,7 @@ func collectCountOutputFuncs(cache *fileParseCache, funcs []*db.Function, fileBy
 		hasNullReturn := false
 		for _, ret := range body.FindAll("return_statement") {
 			children := ret.NamedChildren()
-			if len(children) > 0 && isNullLiteralNode(children[0]) {
+			if len(children) > 0 && parser.IsNullLiteral(children[0]) {
 				hasNullReturn = true
 				break
 			}
@@ -2232,7 +2224,7 @@ func collectAbortOnOOM(cache *fileParseCache, funcs []*db.Function, fileByID map
 				hasGuardedReturn = true
 				continue
 			}
-			if isNullLiteralNode(children[0]) {
+			if parser.IsNullLiteral(children[0]) {
 				hasNullReturn = true
 			}
 		}
@@ -2250,7 +2242,7 @@ func fnReturnsNullOnlyUnderNeverNull(body parser.Node, neverNull map[string]bool
 	hasNull := false
 	for _, ret := range body.FindAll("return_statement") {
 		children := ret.NamedChildren()
-		if len(children) == 0 || !isNullLiteralNode(children[0]) {
+		if len(children) == 0 || !parser.IsNullLiteral(children[0]) {
 			continue
 		}
 		hasNull = true
@@ -2371,7 +2363,7 @@ func returnsNullability(body parser.Node, flow *flowResult, params map[string]in
 			if cons := ifStmt.ChildByFieldName("consequence"); cons != nil {
 				for _, ret := range cons.FindAll("return_statement") {
 					children := ret.NamedChildren()
-					if len(children) > 0 && isNullLiteralNode(children[0]) {
+					if len(children) > 0 && parser.IsNullLiteral(children[0]) {
 						deadReturns[ret.StartLine()] = true
 					}
 				}
@@ -2424,7 +2416,7 @@ func neverNullCallFromOperand(expr parser.Node, neverNull map[string]bool) strin
 }
 
 func exprRetNullability(expr parser.Node, flow *flowResult, params map[string]int, retNullable map[string]retNullability, analyzed map[string]bool, arrs *arrayBaseInfo, line int, srcs []nullSource, fnRetType string) retNullability {
-	if isNullLiteralNode(expr) {
+	if parser.IsNullLiteral(expr) {
 		// Return-type gate: a bare zero/NULL literal in a never-null scalar
 		// return function is the integer zero, not a null pointer. A
 		// pointer-cast zero (`(T *)0`) keeps its null literal meaning
@@ -2730,76 +2722,6 @@ func nodeInsideFunction(node parser.Node) bool {
 	return false
 }
 
-func isNullLiteralExpr(text string) bool {
-	t := strings.TrimSpace(text)
-	for len(t) >= 2 && t[0] == '(' && t[len(t)-1] == ')' && nullLiteralParensBalanced(t[1:len(t)-1]) {
-		t = strings.TrimSpace(t[1 : len(t)-1])
-	}
-	switch t {
-	case "NULL", "nullptr", "(void*)0", "(void *)0", "((void*)0)", "((void *)0)":
-		return true
-	}
-	return false
-}
-
-// isNullLiteralNode is the node-precise form of isNullLiteralExpr. It also
-// recognizes a pointer-typed cast of a null constant (`p = (T*)NULL`,
-// `p = (T*)0`), which the text matcher missed and which therefore left the
-// assignment as a kill instead of a definite null source.
-func isNullLiteralNode(expr parser.Node) bool {
-	switch expr.Kind() {
-	case "parenthesized_expression":
-		children := expr.NamedChildren()
-		if len(children) == 0 {
-			return false
-		}
-		return isNullLiteralNode(children[0])
-	case "cast_expression":
-		var operand parser.Node
-		isPointerCast := false
-		for _, child := range expr.NamedChildren() {
-			if child.Kind() == "type_descriptor" {
-				if strings.Contains(child.Text(), "*") {
-					isPointerCast = true
-				}
-				continue
-			}
-			operand = child
-		}
-		if !isPointerCast || operand.Kind() == "" {
-			return false
-		}
-		return isNullLiteralNode(operand)
-	case "identifier":
-		t := strings.TrimSpace(expr.Text())
-		return t == "NULL" || t == "nullptr"
-	case "null":
-		return true
-	case "number_literal":
-		return strings.TrimSpace(expr.Text()) == "0"
-	}
-	return false
-}
-
-// nullLiteralParensBalanced reports whether s has balanced parentheses, so a
-// parenthesized null literal (`(NULL)`) is stripped while a non-literal
-// expression is left untouched.
-func nullLiteralParensBalanced(s string) bool {
-	depth := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth < 0 {
-				return false
-			}
-		}
-	}
-	return depth == 0
-}
-
 // mayReturnPointer reports whether a function body could return a pointer value.
 // It is a cheap pre-filter for computeRetNullable: a return statement whose
 // expression is a non-pointer literal (int/char/bool/sizeof) cannot yield a NULL
@@ -2816,7 +2738,7 @@ func mayReturnPointer(body parser.Node) bool {
 			continue
 		}
 		expr := children[0]
-		if isNullLiteralNode(expr) {
+		if parser.IsNullLiteral(expr) {
 			return true
 		}
 		switch expr.Kind() {

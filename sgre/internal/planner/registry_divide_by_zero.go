@@ -4,15 +4,15 @@ import "fmt"
 
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
-		Name:              "divide-by-zero",
-		CWE:               "CWE-369",
-		SeedEventType:     "DIVIDE_BY_ZERO",
-		EvidenceType:      "DIVIDE_BY_ZERO",
-		DefaultSuspicion:  "suspected",
-		FilterChain:       "divide-by-zero",
-		FilterFactories:    chainDivideByZero(),
-		Categories:        []string{"divide_by_zero", "int_min_div"},
-		CategoryCWEs:      map[string]string{"int_min_div": "CWE-190"},
+		Name:             "divide-by-zero",
+		CWE:              "CWE-369",
+		SeedEventType:    "DIVIDE_BY_ZERO",
+		EvidenceType:     "DIVIDE_BY_ZERO",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "divide-by-zero",
+		FilterFactories:  chainDivideByZero(),
+		Categories:       []string{"divide_by_zero", "int_min_div"},
+		CategoryCWEs:     map[string]string{"int_min_div": "CWE-190"},
 		// int_min_div is a certain CWE-190 signed overflow: a 32-bit INT_MIN
 		// dividend divided by -1 overflows to INT_MIN (the detector proved the
 		// operand pair, and widthOf restricted it to the 32-bit int family).

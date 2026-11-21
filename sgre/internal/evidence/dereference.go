@@ -278,17 +278,6 @@ func (d *DereferenceDetector) insertDerefEvent(ctx context.Context, f *db.Functi
 	}
 }
 
-// collectNonNullableArrays returns the set of array variable names that are
-// DEFINITELY non-null at a dereference inside function f: file-scope arrays
-// (globals) and arrays declared inside f, minus f's own parameters. The previous
-// file-scoped-by-name version let a local array in one function mark a same-named
-// pointer in another function as non-nullable (a silent null-deref false
-// negative), and a same-named array parameter wrongly cleared another function's
-// real array (a false positive). Scoping to f fixes both directions.
-func collectNonNullableArrays(root parser.Node, f *db.Function) map[string]bool {
-	return collectNonNullableArraysFast(f, root.FindAll("parameter_declaration"), root.FindAll("declaration"))
-}
-
 // collectNonNullableArraysFast is the pre-collected-node form of
 // collectNonNullableArrays: the FindAll walks are hoisted to the per-file loop
 // so this is O(f's relevant nodes) rather than O(AST) per function.

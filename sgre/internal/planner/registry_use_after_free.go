@@ -10,10 +10,10 @@ func init() {
 		EvidenceType:     "USE_AFTER_FREE",
 		DefaultSuspicion: "suspected",
 		FilterChain:      "lifetime",
-		FilterFactories:    chainLifetime(),
+		FilterFactories:  chainLifetime(),
 		// One freed variable used at many sites is one defect, not one per use.
 		ConvergeByVariable: true,
-		BuildVerdictFacts: buildUseAfterFreeVerdictFacts,
+		BuildVerdictFacts:  buildUseAfterFreeVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "use_after_free", Role: "sink", Detail: fmt.Sprintf("variable %s freed at line %d then used at line %d in function %s", c.VariableName, c.FreeLine, c.Line, c.FunctionName)},

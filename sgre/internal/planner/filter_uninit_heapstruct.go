@@ -243,20 +243,6 @@ func derefWholeBase(lhs parser.Node) string {
 	return ""
 }
 
-func addressTakenFieldPath(arg parser.Node) string {
-	if arg.Kind() != "pointer_expression" {
-		return ""
-	}
-	if !strings.HasPrefix(strings.TrimSpace(arg.Text()), "&") {
-		return ""
-	}
-	children := arg.NamedChildren()
-	if len(children) > 0 && (children[0].Kind() == "field_expression" || children[0].Kind() == "subscript_expression") {
-		return children[0].Text()
-	}
-	return ""
-}
-
 func isZeroInitAllocName(name string) bool {
 	return apikb.IsZeroInitAllocator(name)
 }

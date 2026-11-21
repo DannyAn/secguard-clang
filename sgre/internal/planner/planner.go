@@ -196,7 +196,6 @@ func (p *Planner) Plan(ctx context.Context, vulnType string) (*PlanResult, error
 				p.logger.Warn("filter failed", "filter", filter.Name(), "error", err)
 			}
 			filtered = candidates
-			dropped = nil
 			filterErr = err.Error()
 		} else {
 			dismissed = append(dismissed, dropped...)

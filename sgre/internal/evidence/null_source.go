@@ -163,7 +163,7 @@ func (d *NullSourceDetector) detectStaticNullGlobals(ctx context.Context, file *
 		}
 		children := assign.NamedChildren()
 		rhsStart := assignmentRHSStart(assign)
-		if len(children) > rhsStart && isNullLiteral(children[rhsStart]) {
+		if len(children) > rhsStart && parser.IsNullLiteral(children[rhsStart]) {
 			continue
 		}
 		written[name] = true
@@ -364,7 +364,7 @@ func pointerDeclaredNull(decl parser.Node, name string) bool {
 		if declared != name {
 			continue
 		}
-		return isNullLiteral(dc[len(dc)-1])
+		return parser.IsNullLiteral(dc[len(dc)-1])
 	}
 	return true
 }
@@ -382,7 +382,7 @@ func (d *NullSourceDetector) detectReturnNull(ctx context.Context, f *db.Functio
 			continue
 		}
 		expr := strings.TrimSpace(children[0].Text())
-		if !isNullLiteral(children[0]) && expr != "0" {
+		if !parser.IsNullLiteral(children[0]) && expr != "0" {
 			continue
 		}
 		// Return-type gate: in a function whose declared return type is a
@@ -462,7 +462,7 @@ func (d *NullSourceDetector) detectExplicitNull(ctx context.Context, f *db.Funct
 		if varName == "" {
 			return
 		}
-		if !isNullLiteral(rhs) {
+		if !parser.IsNullLiteral(rhs) {
 			return
 		}
 		if emitEvent(ctx, d.store, d.logger, "NULL_VALUE", f.ID, &db.Location{FileID: file.ID, Line: node.StartLine()}, map[string]string{"variable": varName, "origin": "explicit_null", "definite": "true"}) {
@@ -600,47 +600,6 @@ func (d *NullSourceDetector) detectMacroNull(ctx context.Context, f *db.Function
 			result.EventsCreated++
 		}
 	}
-}
-
-// isNullLiteral reports whether an expression is an explicit null pointer
-// constant (NULL, nullptr, or a zero such as `0` / `(T*)0`). A bare 0 IS a null
-// pointer constant in C (`p = 0` is a definite null for a pointer), so it is
-// accepted here; a non-pointer variable assigned 0 yields a NULL_VALUE that
-// never reaches a dereference, and the return-null path applies its own
-// scalar-return-type gate for `int f() { return 0; }`.
-func isNullLiteral(n parser.Node) bool {
-	switch n.Kind() {
-	case "parenthesized_expression":
-		children := n.NamedChildren()
-		if len(children) == 0 {
-			return false
-		}
-		return isNullLiteral(children[0])
-	case "cast_expression":
-		var operand parser.Node
-		isPointerCast := false
-		for _, child := range n.NamedChildren() {
-			if child.Kind() == "type_descriptor" {
-				if strings.Contains(child.Text(), "*") {
-					isPointerCast = true
-				}
-				continue
-			}
-			operand = child
-		}
-		if !isPointerCast || operand.Kind() == "" {
-			return false
-		}
-		return isNullLiteral(operand)
-	case "identifier":
-		t := strings.TrimSpace(n.Text())
-		return t == "NULL" || t == "nullptr"
-	case "null":
-		return true
-	case "number_literal":
-		return strings.TrimSpace(n.Text()) == "0"
-	}
-	return false
 }
 
 func (d *NullSourceDetector) detectExternalCall(ctx context.Context, f *db.Function, file *db.File, assigns, inits []parser.Node, result *DetectResult, knownFuncs map[string]bool, retTypes map[string]string, nullableFuncs map[string]bool, trusted map[string]bool) {

@@ -27,7 +27,9 @@ func TestUnboundedLength_Detect(t *testing.T) {
 		if err != nil || fn == nil {
 			continue
 		}
-		var props struct{ Category string `json:"category"` }
+		var props struct {
+			Category string `json:"category"`
+		}
 		_ = json.Unmarshal([]byte(e.Properties), &props)
 		if props.Category == "unbounded_length" {
 			byFunc[fn.Name] = true

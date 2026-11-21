@@ -633,22 +633,6 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 	}, nil
 }
 
-// graphExists reports whether the DB has any graph edges from a prior run.
-// It is the reuse gate for skipping the graph+detector rebuild when no source
-// file changed since the last index/scan.
-func graphExists(ctx context.Context, store db.Store) bool {
-	var exists bool
-	err := store.DB().QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM graph_edges)").Scan(&exists)
-	return err == nil && exists
-}
-
-// eventsExist reports whether the DB has any security events from a prior run.
-func eventsExist(ctx context.Context, store db.Store) bool {
-	var exists bool
-	err := store.DB().QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM security_events)").Scan(&exists)
-	return err == nil && exists
-}
-
 // reuseFingerprint is the complete identity of the GRAPH inputs: the config
 // checksum PLUS everything that used to bypass it — the tool version, the
 // registered detector set (a new detector may need graph facts its predecessor
@@ -743,18 +727,6 @@ func detectorDoneSet(skipSet map[string]bool, errs []evidence.DetectorError) []s
 		}
 	}
 	return out
-}
-
-// configChecksumUnchanged reports whether the current config file's checksum
-// matches the one recorded at the last graph+detector build. A missing meta
-// row (first run, or pre-this-feature DB) returns false so the build runs once
-// and records the checksum for future runs.
-func configChecksumUnchanged(ctx context.Context, store db.Store) bool {
-	stored, ok, err := store.GetMeta(ctx, "config_checksum")
-	if err != nil || !ok {
-		return false
-	}
-	return stored == config.ConfigChecksum()
 }
 
 // graphBuildComplete reports whether the last graph+detector build recorded

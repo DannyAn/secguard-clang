@@ -33,7 +33,7 @@ type BatchResult struct {
 	// Escalate is true when the inconclusive fraction exceeds the escalation
 	// threshold — the batch is handed back to agent-mode deep-dive (route B's
 	// fallback) instead of being forced to a binary verdict.
-	Escalate bool `json:"escalate,omitempty"`
+	Escalate bool   `json:"escalate,omitempty"`
 	Err      string `json:"error,omitempty"`
 	// MissingSeqs is the conservation-audit gap: expected candidates that got no
 	// verdict back. A non-empty value means the worker under-reported, and the

@@ -36,9 +36,9 @@ func TestConfirmedTierPolicy(t *testing.T) {
 			"format_overflow":       "format literal + argument output provably >= capacity (constant fold)",
 		},
 		"integer-overflow": {
-			"definite_overflow":       "literal-constant arithmetic provably overflows the type (constant fold)",
-			"shift_count_ub":          "constant-proved: a shift count at/above the operand width or negative is certain CWE-758",
-			"shift_signed_overflow":   "constant-proved: a signed literal left-shifted past its signed range is certain CWE-190",
+			"definite_overflow":     "literal-constant arithmetic provably overflows the type (constant fold)",
+			"shift_count_ub":        "constant-proved: a shift count at/above the operand width or negative is certain CWE-758",
+			"shift_signed_overflow": "constant-proved: a signed literal left-shifted past its signed range is certain CWE-190",
 		},
 		"out-of-bounds": {
 			"array_oob_read": "constant index past a known array size (read)",

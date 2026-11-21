@@ -164,7 +164,7 @@ func memberSubscriptBase(sub parser.Node) (string, string, bool) {
 // is the symbol a bounds check compares against). A struct declared in an
 // included header — the normal C layout — is resolved through the tree-wide
 // census, so `p->svr[p->idx]` is analyzed even when the struct is not in this
-// translation unit''s file.
+// translation unit”s file.
 func fieldArrayCapacity(bc *bufCtx, field string) (int, string) {
 	if size, symbol := fieldArrayCapacityLocal(bc, field); size > 0 {
 		return size, symbol

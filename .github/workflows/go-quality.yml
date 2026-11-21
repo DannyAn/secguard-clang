@@ -1,0 +1,51 @@
+name: go-quality
+
+on:
+  pull_request:
+    paths:
+      - 'sgre/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'sgre/**'
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: gofmt
+        working-directory: sgre
+        run: |
+          files=$(gofmt -l cmd internal testdata)
+          if [ -n "$files" ]; then
+            echo "gofmt required for:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: go vet
+        working-directory: sgre
+        run: |
+          mkdir -p .tmpcache
+          GOCACHE=$PWD/.tmpcache go vet -buildvcs=false ./...
+
+      - name: go test
+        working-directory: sgre
+        run: |
+          mkdir -p .tmpcache
+          GOCACHE=$PWD/.tmpcache go test -buildvcs=false ./...
+
+      - name: staticcheck
+        working-directory: sgre
+        run: |
+          mkdir -p .tmpcache
+          GOCACHE=$PWD/.tmpcache go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
+          GOCACHE=$PWD/.tmpcache "$(go env GOPATH)/bin/staticcheck" ./...

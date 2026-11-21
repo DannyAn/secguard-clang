@@ -29,6 +29,7 @@ type returnSummaryResolver struct {
 	parser   *parser.Parser
 	cache    *fileParseCache
 	cfgCache *graph.CFGCache
+	ctx      context.Context
 
 	funcByName map[string][]int64
 	fnByID     map[int64]*db.Function
@@ -50,9 +51,13 @@ type returnSummaryResolver struct {
 }
 
 func newReturnSummaryResolver(ctx context.Context, store db.Store, p *parser.Parser) *returnSummaryResolver {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	r := &returnSummaryResolver{
 		store:      store,
 		parser:     p,
+		ctx:        ctx,
 		cache:      newFileParseCache(p),
 		funcByName: map[string][]int64{},
 		fnByID:     map[int64]*db.Function{},
@@ -172,7 +177,7 @@ func (r *returnSummaryResolver) funcNonZero(fnID int64) bool {
 		return false
 	}
 
-	flow := analyzeRangesWithCalls(context.Background(), r.cfgCache, r.cache.treeFor(file), fn, body, nil)
+	flow := analyzeRangesWithCalls(r.ctx, r.cfgCache, r.cache.treeFor(file), fn, body, nil)
 	defer flow.release()
 	consts := r.globalConsts
 	if consts == nil {
