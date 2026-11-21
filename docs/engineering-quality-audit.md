@@ -15,7 +15,7 @@
 >
 > **复核修正**：初版报告把 Crapper / Dryer / Mutator 记为“未安装”，这是错误的——三者一直在 `~/.local/bin`，现在已用于复核；初版的复杂度/CRAP/重复率结论已按工具输出修正，并新增了静态检查、变异测试与系统性重复的证据。详细修正见 §3.7。
 >
-> **阶段二执行状态（2026-11-21）**：PR #309–#313 已合入 main（`8d165e9`）；PR #314 进行中。U1/U2/U1b/U4a/U4c/U5/U7a(参数层)/U4d/U6/U4b 完成；M-07 chunked `List*ByIDs` 完成；U3a 核心完成（626 处 Build/Detect 断言，另修复 9 条生产 errcheck；当前 uncapped 157 条：测试 127、生产 30）；U3b 关键零覆盖路径完成，并修复指针/数组字段类型解析（`892fed9`）。剩余 U3a 其余 errcheck、M-07 其余 scan/CRUD 模板、U7b、M-12、L-03/L-04、U7a 函数体拆分见 §9/§10。§6 L-01 保留审计时的清单描述。
+> **阶段二执行状态（2026-11-21）**：PR #309–#314 已合入 main（`c318ae0`）。U1/U2/U1b/U4a/U4c/U5/U7a(参数层)/U4d/U6/U4b 完成；M-07 chunked `List*ByIDs` 完成；U3a 核心完成（626 处 Build/Detect 断言），生产 errcheck 已清零（`84c5909`），仅剩 127 条测试 errcheck；U3b 关键零覆盖路径完成，并修复指针/数组字段类型解析（`892fed9`）。剩余 U3a 测试 errcheck、M-07 其余 scan/CRUD 模板、U7b、M-12、L-03/L-04、U7a 函数体拆分见 §9/§10。§6 L-01 保留审计时的清单描述。
 
 ---
 
@@ -619,7 +619,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | U8 context 贯穿 | 完成 | `returnSummaryResolver` 保存 ctx，`funcNonZero` 用 `r.ctx` 不再用 Background |
 | U5 CI 门禁 | 完成 | 新增 `.github/workflows/go-quality.yml`：gofmt + vet + 全量 test + staticcheck |
 | U7a uninit 参数结构体 | 完成（参数层） | `uninitScanInputs` 替换 20/14/13 位置参数；676/505/272 行函数体仍未拆分 |
-| U3a 测试错误传播基座 | 部分完成（核心） | 626 处裸 Build/Detect 已加断言（`b76beb5`）；另修复 9 条生产 errcheck（`82ac5e2`）；当前 uncapped 157（测试 127、生产 30） |
+| U3a 测试错误传播基座 | 部分完成（核心） | 626 处裸 Build/Detect 已加断言（`b76beb5`）；生产 errcheck 清零（`84c5909`，含 free/race 遍历错误传播）；剩 127 条测试 errcheck |
 | U3b 零覆盖检测路径补测 | 完成（关键路径） | do-while CFG、`relationalNonZeroVar`、`BuildPlanSummary`、`SubprocessRunner.Run`（`5f185c2`/`404567c`）；`findFieldTypeName`/`writeSecondCalleeDefinition` + 指针/数组字段修复（`892fed9`） |
 | U4b 文件遍历骨架统一 | 完成 | `internal/scanwalk.Each` 统一 evidence/graph 的 ReadFile+ParseCached+Release；新增 parse/skip/cancel 测试（commit `385d441`） |
 | U4d 数据流加载器统一 | 完成 | `loadVarRefMaps` 单源；DATA_FLOW/ALIAS/RELEASE 加载器只保留边处理 |
@@ -629,7 +629,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | M-12 源文件重复读取 | 未完成 | 需在大语料量化 I/O 后再决定缓存方案 |
 | L-03/L-04 基准与 CWE parity | 未完成 | 0 个 Benchmark；db 默认 CWE 集合仍需 parity 测试 |
 
-**验证基线（合入 main + U3b 字段修复 + 生产 errcheck）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。历史 #309–#313 已合入 main `8d165e9`；当前分支新增 U3b 字段修复 `892fed9`、gosimple `c515a74`、生产 errcheck `82ac5e2`。
+**验证基线（合入 main + 生产 errcheck 清零）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。历史 #309–#314 已合入 main `c318ae0`；当前分支新增生产 errcheck 清零 `84c5909`。
 
 
 ---
@@ -686,6 +686,7 @@ git cherry-pick 404567c   # U3b: plan summary + subprocess runner tests
 git cherry-pick 892fed9   # U3b: pointer/array field type fix + second callee test
 git cherry-pick c515a74   # U3a: drop blank map assignments (gosimple)
 git cherry-pick 82ac5e2   # U3a: production errcheck paths
+git cherry-pick 84c5909   # U3a: propagate free/race traversal errors; clear production errcheck
 # 文档提交可按需 cherry-pick：ba05a99、faa51a6、0c3a331，或直接保留本报告
 ```
 
@@ -775,6 +776,7 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 | U3b summary/runner 测试 | `404567c` | `BuildPlanSummary` 分支、`SubprocessRunner.Run` 成功/失败/解析 | `go test ./internal/report ./internal/worker` |
 | U3b 字段类型修复 | `892fed9` | `fieldDeclarationName` 下钻指针/数组声明；`findFieldTypeName`/`writeSecondCalleeDefinition` 测试 | `go test ./internal/evidence ./internal/report` + 基准 |
 | U3a 生产 errcheck | `82ac5e2` | JSON parse、hash write、Sscanf 错误处理 | `go test ./internal/planner ./internal/cli ./internal/evidence` + 全测试 |
+| U3a 生产 errcheck 清零 | `84c5909` | free summary/race 遍历错误传播；CLI WriteJSON 显式 best-effort | 全测试 + 基准 |
 
 回滚：每个单元可以用 `git revert <commit>` 或恢复该单元涉及的文件；已合入的提交都在 main 历史中，revert 后必须重跑 10.3 全部门禁。U1b 的 `parser.SetLanguage` 错误处理只在“语言版本不匹配”时改变行为，回滚时注意保留 error 语义。
 
