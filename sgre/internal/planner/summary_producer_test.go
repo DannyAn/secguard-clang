@@ -10,9 +10,15 @@ import (
 func TestEnsureFunctionSummaries(t *testing.T) {
 	ctx := context.Background()
 	s := newMockStore()
-	s.InsertFunction(ctx, &db.Function{Name: "a"}) // ID 1
-	s.InsertFunction(ctx, &db.Function{Name: "b"}) // ID 2
-	s.InsertFunction(ctx, &db.Function{Name: "c"}) // ID 3
+	if _, err := s.InsertFunction(ctx, &db.Function{Name: "a"}); err != nil {
+		t.Fatalf("insert function: %v", err)
+	} // ID 1
+	if _, err := s.InsertFunction(ctx, &db.Function{Name: "b"}); err != nil {
+		t.Fatalf("insert function: %v", err)
+	} // ID 2
+	if _, err := s.InsertFunction(ctx, &db.Function{Name: "c"}); err != nil {
+		t.Fatalf("insert function: %v", err)
+	} // ID 3
 	// The null-source detector already seeded a literal `return NULL` witness for
 	// function 1; it must be left untouched by the backfill.
 	s.summaries[1] = &db.FunctionSummary{FunctionID: 1, ReturnNullable: true}

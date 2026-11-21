@@ -100,7 +100,9 @@ func TestRankCandidates_HighSeveritySurvivesCap(t *testing.T) {
 	fileID, _ := s.InsertFile(context.Background(), &db.File{Path: "test.c"})
 	funcID, _ := s.InsertFunction(context.Background(), &db.Function{FileID: fileID, Name: "foo", StartLine: 1, EndLine: 200})
 
-	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcID, Properties: `{"variable":"p"}`})
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcID, Properties: `{"variable":"p"}`}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	for i := 0; i < 35; i++ {
 		loc, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: i + 1})
@@ -108,12 +110,14 @@ func TestRankCandidates_HighSeveritySurvivesCap(t *testing.T) {
 		if i == 30 {
 			apiName = "strcpy"
 		}
-		s.InsertEvent(context.Background(), &db.SecurityEvent{
+		if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{
 			EventType:  "DEREFERENCE",
 			EntityID:   funcID,
 			LocationID: loc,
 			Properties: `{"variable":"p","expression":"p->f","function":"` + apiName + `"}`,
-		})
+		}); err != nil {
+			t.Fatalf("insert event: %v", err)
+		}
 	}
 
 	p := NewPlanner(s, nil, nil)

@@ -132,7 +132,9 @@ void f(void) {
 		var props struct {
 			Field string `json:"field"`
 		}
-		json.Unmarshal([]byte(e.Properties), &props)
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		got[names[e.SrcID]] = names[e.DstID] + "." + props.Field
 	}
 
@@ -185,7 +187,9 @@ int *g(void) {
 		var props struct {
 			Kind string `json:"kind"`
 		}
-		json.Unmarshal([]byte(e.Properties), &props)
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		kinds[props.Kind] = true
 	}
 	if !kinds["global"] || !kinds["return"] {
@@ -244,7 +248,9 @@ void f(void) {
 			Callee string `json:"callee"`
 			Index  int    `json:"index"`
 		}
-		json.Unmarshal([]byte(bindings[0].Properties), &props)
+		if err := json.Unmarshal([]byte(bindings[0].Properties), &props); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		if props.Callee != "helper" || props.Index != 0 {
 			t.Errorf("PARAM_BINDING props = %+v, want callee=helper index=0", props)
 		}

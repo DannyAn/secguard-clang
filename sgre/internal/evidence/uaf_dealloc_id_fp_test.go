@@ -15,7 +15,9 @@ import (
 func TestUAF_DeallocIdFP(t *testing.T) {
 	store, p := setupDetector(t, "tc_uaf_dealloc_id_fp.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewUseAfterFreeDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
@@ -28,7 +30,9 @@ func TestUAF_DeallocIdFP(t *testing.T) {
 	}
 	for _, ev := range events {
 		var pr props
-		json.Unmarshal([]byte(ev.Properties), &pr)
+		if err := json.Unmarshal([]byte(ev.Properties), &pr); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		loc, _ := store.GetLocationByID(ctx, ev.LocationID)
 		line := 0
 		if loc != nil {
@@ -39,7 +43,9 @@ func TestUAF_DeallocIdFP(t *testing.T) {
 
 	for _, ev := range events {
 		var pr props
-		json.Unmarshal([]byte(ev.Properties), &pr)
+		if err := json.Unmarshal([]byte(ev.Properties), &pr); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		if pr.Variable == "BC_ORG_M_CACHE_ID" || pr.Variable == "BC_ORG_S_CACHE_ID" {
 			t.Errorf("FALSE POSITIVE: %s (macro constant ID) flagged as use-after-free", pr.Variable)
 		}
@@ -48,7 +54,9 @@ func TestUAF_DeallocIdFP(t *testing.T) {
 	foundPositive := false
 	for _, ev := range events {
 		var pr props
-		json.Unmarshal([]byte(ev.Properties), &pr)
+		if err := json.Unmarshal([]byte(ev.Properties), &pr); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		if pr.Variable == "p" {
 			foundPositive = true
 		}

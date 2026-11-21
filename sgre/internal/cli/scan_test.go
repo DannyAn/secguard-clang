@@ -46,11 +46,17 @@ func TestScanRetention_PriorScanDirsPreserved(t *testing.T) {
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir1 := filepath.Join(scansRoot, "sc_2026-08-11_140000_aaaaaa")
 	scanDir2 := filepath.Join(scansRoot, "sc_2026-08-11_140001_bbbbbb")
-	os.MkdirAll(scanDir1, 0755)
-	os.MkdirAll(scanDir2, 0755)
+	if err := os.MkdirAll(scanDir1, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if err := os.MkdirAll(scanDir2, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	if code := runScan(t, ctx, dbPath, scanDir1, cPath); code != 0 {
 		t.Fatalf("first scan failed with code %d", code)
@@ -101,11 +107,17 @@ func TestScanRetention_LatestSymlinkUpdated(t *testing.T) {
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir1 := filepath.Join(scansRoot, "sc_2026-08-11_140000_cccccc")
 	scanDir2 := filepath.Join(scansRoot, "sc_2026-08-11_140001_dddddd")
-	os.MkdirAll(scanDir1, 0755)
-	os.MkdirAll(scanDir2, 0755)
+	if err := os.MkdirAll(scanDir1, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if err := os.MkdirAll(scanDir2, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	runScan(t, ctx, dbPath, scanDir1, cPath)
 
@@ -136,10 +148,14 @@ func TestScanRetention_ScanLogPersisted(t *testing.T) {
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_140000_eeeeee")
-	os.MkdirAll(scanDir, 0755)
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	if code := runScan(t, ctx, dbPath, scanDir, cPath); code != 0 {
 		t.Fatalf("scan failed with code %d", code)
@@ -190,9 +206,13 @@ func TestScanZeroCandidateTypesMarkedDone(t *testing.T) {
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_140000_ffffff")
-	os.MkdirAll(scanDir, 0755)
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	if code := runScan(t, ctx, dbPath, scanDir, cPath); code != 0 {
 		t.Fatalf("scan failed with code %d", code)
@@ -236,14 +256,20 @@ func captureOutput(fn func() int) (stdout, stderr string, exitCode int) {
 	doneErr := make(chan struct{})
 	go func() {
 		var buf bytes.Buffer
-		io.Copy(&buf, rOut)
+		if _, err := io.Copy(&buf, rOut); err != nil {
+			close(doneOut)
+			return
+		}
 		stdout = buf.String()
 		close(doneOut)
 	}()
 
 	go func() {
 		var buf bytes.Buffer
-		io.Copy(&buf, rErr)
+		if _, err := io.Copy(&buf, rErr); err != nil {
+			close(doneErr)
+			return
+		}
 		stderr = buf.String()
 		close(doneErr)
 	}()
@@ -267,9 +293,13 @@ func TestScanCmd_JSONEnvelopeHasTargetPathAndScanDir(t *testing.T) {
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_150000_xxxxxx")
-	os.MkdirAll(scanDir, 0755)
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	stdout, _, exitCode := captureOutput(func() int {
 		return runScan(t, ctx, dbPath, scanDir, cPath)
@@ -307,9 +337,13 @@ func TestScanCmd_StderrHasSummaryTable(t *testing.T) {
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_150001_yyyyyy")
-	os.MkdirAll(scanDir, 0755)
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	_, stderr, exitCode := captureOutput(func() int {
 		return runScan(t, ctx, dbPath, scanDir, cPath)
@@ -333,9 +367,13 @@ func TestScanCmd_StdoutIsValidJSON(t *testing.T) {
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_150002_zzzzzz")
-	os.MkdirAll(scanDir, 0755)
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	stdout, _, exitCode := captureOutput(func() int {
 		return runScan(t, ctx, dbPath, scanDir, cPath)
@@ -357,9 +395,13 @@ func TestScanCmd_JSONEnvelopeHasSummaryField(t *testing.T) {
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir := filepath.Join(scansRoot, "sc_2026-08-11_150003_ffffff")
-	os.MkdirAll(scanDir, 0755)
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	stdout, _, exitCode := captureOutput(func() int {
 		return runScan(t, ctx, dbPath, scanDir, cPath)
@@ -430,9 +472,13 @@ func TestScanCmd_SkipDetectorsEnvelope(t *testing.T) {
 
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	scanDir := filepath.Join(scansRoot, "sc_2026-08-11", "sc_2026-08-11_150001_yyyyyy")
-	os.MkdirAll(scanDir, 0755)
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	config.SetSkipDetectorsOverride("memory-leak, unchecked_return")
 	defer config.SetSkipDetectorsOverride("")
@@ -472,9 +518,13 @@ func TestScanCmd_SkipDetectorsUnknownHardFails(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 
 	scanDir := filepath.Join(root, ".codeagent", "secguard-clang", "scans", "sc_2026-08-11", "sc_2026-08-11_150001_zzzzzz")
-	os.MkdirAll(scanDir, 0755)
+	if err := os.MkdirAll(scanDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	config.SetSkipDetectorsOverride("memory_leak, not_a_detector")
 	defer config.SetSkipDetectorsOverride("")

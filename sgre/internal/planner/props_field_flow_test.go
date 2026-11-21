@@ -121,10 +121,12 @@ func TestSeedPropsFlowToCandidate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("spec: %v", err)
 			}
-			s.InsertEvent(ctx, &db.SecurityEvent{
+			if _, err := s.InsertEvent(ctx, &db.SecurityEvent{
 				EventType: spec.SeedEventType, EntityID: fnID, LocationID: locID,
 				Properties: tc.props,
-			})
+			}); err != nil {
+				t.Fatalf("insert event: %v", err)
+			}
 			p := NewPlanner(s, nil, nil)
 			cands, _, err := p.seedCandidatesByType(ctx, spec)
 			if err != nil {

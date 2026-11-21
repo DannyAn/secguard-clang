@@ -18,7 +18,9 @@ import (
 func TestDF_CountParamFP(t *testing.T) {
 	store, p := setupDetector(t, "tc_df_count_param_fp.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewDoubleFreeDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewDoubleFreeDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	events, err := store.ListEventsByType(ctx, "DOUBLE_FREE")
@@ -30,7 +32,9 @@ func TestDF_CountParamFP(t *testing.T) {
 		var pr struct {
 			Variable string `json:"variable"`
 		}
-		json.Unmarshal([]byte(ev.Properties), &pr)
+		if err := json.Unmarshal([]byte(ev.Properties), &pr); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		vars[pr.Variable] = true
 	}
 

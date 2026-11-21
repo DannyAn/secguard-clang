@@ -36,7 +36,9 @@ func TestNullSource_NullabilityTiers(t *testing.T) {
 			Origin   string `json:"origin"`
 			Function string `json:"function"`
 		}
-		json.Unmarshal([]byte(e.Properties), &props)
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		switch props.Origin {
 		case "strchr":
 			seenStrchr = true

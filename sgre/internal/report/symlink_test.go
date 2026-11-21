@@ -40,8 +40,12 @@ func TestUpdateLatest_ReplacesExistingSymlink(t *testing.T) {
 	scansDir := t.TempDir()
 	scanA := "scan_a"
 	scanB := "scan_b"
-	os.MkdirAll(filepath.Join(scansDir, scanA), 0755)
-	os.MkdirAll(filepath.Join(scansDir, scanB), 0755)
+	if err := os.MkdirAll(filepath.Join(scansDir, scanA), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(scansDir, scanB), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	if err := UpdateLatest(scansDir, scanA); err != nil {
 		t.Fatalf("first UpdateLatest failed: %v", err)
@@ -67,10 +71,14 @@ func TestUpdateLatest_NoStaleTempRemains(t *testing.T) {
 
 	scansDir := t.TempDir()
 	scanID := "scan_x"
-	os.MkdirAll(filepath.Join(scansDir, scanID), 0755)
+	if err := os.MkdirAll(filepath.Join(scansDir, scanID), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	staleTmp := filepath.Join(scansDir, fmt.Sprintf(latestTmpFmt, os.Getpid()))
-	os.Symlink("old_scan", staleTmp)
+	if err := os.Symlink("old_scan", staleTmp); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	if err := UpdateLatest(scansDir, scanID); err != nil {
 		t.Fatalf("UpdateLatest failed: %v", err)
@@ -88,7 +96,9 @@ func TestUpdateLatest_FallbackLatestTxt(t *testing.T) {
 
 	scansDir := t.TempDir()
 	scanID := "2026-08-11_143022_a1b2"
-	os.MkdirAll(filepath.Join(scansDir, scanID), 0755)
+	if err := os.MkdirAll(filepath.Join(scansDir, scanID), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	if err := UpdateLatest(scansDir, scanID); err != nil {
 		t.Fatalf("UpdateLatest failed: %v", err)
@@ -110,7 +120,9 @@ func TestUpdateLatest_LatestTxtContentHasNoTrailingNewline(t *testing.T) {
 
 	scansDir := t.TempDir()
 	scanID := "2026-08-11_143022_a1b2"
-	os.MkdirAll(filepath.Join(scansDir, scanID), 0755)
+	if err := os.MkdirAll(filepath.Join(scansDir, scanID), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	if err := writeLatestTxt(scansDir, scanID); err != nil {
 		t.Fatalf("writeLatestTxt failed: %v", err)

@@ -42,7 +42,9 @@ func setupBenchmarkData(s *mockStore) {
 	insertBufferEvent := func(funcID int64, line int, funcName, category string) {
 		locID, _ := s.InsertLocation(ctx, &db.Location{FileID: fileID, Line: line})
 		props, _ := json.Marshal(map[string]string{"function": funcName, "category": category})
-		s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: funcID, LocationID: locID, Properties: string(props)})
+		if _, err := s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: funcID, LocationID: locID, Properties: string(props)}); err != nil {
+			panic(err)
+		}
 	}
 
 	insertBufferEvent(p0Func, 24, "memcpy_s", "buffer_overflow")
@@ -80,7 +82,9 @@ func setupBenchmarkData(s *mockStore) {
 	for _, fid := range []int64{p0Func, p0Func2, p0Func3, p1Func, p1Func2, wrapperCopy, wrapperStrCpy, wrapperQuery, p2Func, p2Func2, p2Func3, p3Func, p3Func2, tpFunc, tpFunc2} {
 		node, _ := s.GetOrCreateGraphNode(ctx, "function", fid, "")
 		entryNode, _ := s.GetOrCreateGraphNode(ctx, "function", 0, `{"entry":true}`)
-		s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: entryNode, DstID: node, EdgeType: "CALL"})
+		if _, err := s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: entryNode, DstID: node, EdgeType: "CALL"}); err != nil {
+			panic(err)
+		}
 	}
 }
 
@@ -210,7 +214,9 @@ func toCandidates(events []*db.SecurityEvent, s *mockStore, ctx context.Context)
 			Function string `json:"function"`
 			Variable string `json:"variable"`
 		}
-		json.Unmarshal([]byte(e.Properties), &props)
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			continue
+		}
 		// Mirror seedCandidatesByType: FunctionName = the containing function
 		// (looked up by EntityID), APIName = the called API (props.Function).
 		funcName := ""

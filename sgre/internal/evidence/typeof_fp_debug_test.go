@@ -28,7 +28,9 @@ import (
 func TestUncheckedReturn_TypeofAndMultiAssignFP(t *testing.T) {
 	store, p := setupDetector(t, "tc_typeof_unchecked_return_fp.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewUncheckedReturnDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewUncheckedReturnDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	events, err := store.ListEventsByType(ctx, "UNCHECKED_RETURN")
@@ -43,7 +45,9 @@ func TestUncheckedReturn_TypeofAndMultiAssignFP(t *testing.T) {
 	flagged := map[string]int{}
 	for _, ev := range events {
 		var pr props
-		json.Unmarshal([]byte(ev.Properties), &pr)
+		if err := json.Unmarshal([]byte(ev.Properties), &pr); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		flagged[pr.Function]++
 	}
 
@@ -66,7 +70,9 @@ func TestUncheckedReturn_TypeofAndMultiAssignFP(t *testing.T) {
 func TestUncheckedReturn_TypeofAndMultiAssignFP_Planner(t *testing.T) {
 	store, p := setupDetector(t, "tc_typeof_unchecked_return_fp.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewUncheckedReturnDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewUncheckedReturnDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	pl := planner.NewPlanner(store, p, logger)

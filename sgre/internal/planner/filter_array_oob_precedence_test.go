@@ -14,12 +14,14 @@ func TestArrayOOBPrecedence_NullDerefSuppressed(t *testing.T) {
 
 	loc, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 10})
 
-	s.InsertEvent(context.Background(), &db.SecurityEvent{
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{
 		EventType:  "BUFFER_ACCESS",
 		EntityID:   funcID,
 		LocationID: loc,
 		Properties: `{"array":"buf","index":"64","category":"buffer_overflow"}`,
-	})
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
 
 	candidates := []Candidate{
 		{VariableName: "buf", FileID: fileID, Line: 10, NonNullable: true, LocationID: loc},
@@ -42,12 +44,14 @@ func TestArrayOOBPrecedence_HeapPointerRetained(t *testing.T) {
 
 	loc, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 10})
 
-	s.InsertEvent(context.Background(), &db.SecurityEvent{
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{
 		EventType:  "BUFFER_ACCESS",
 		EntityID:   funcID,
 		LocationID: loc,
 		Properties: `{"array":"buf","index":"i","category":"buffer_overflow"}`,
-	})
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
 
 	candidates := []Candidate{
 		{VariableName: "ptr", FileID: fileID, Line: 10, NonNullable: false, LocationID: loc},
@@ -98,12 +102,14 @@ func TestArrayOOBPrecedence_MatchesDistinctLocationRowsOnSameLine(t *testing.T) 
 		t.Fatalf("test requires distinct location rows, both are %d", eventLoc)
 	}
 
-	s.InsertEvent(context.Background(), &db.SecurityEvent{
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{
 		EventType:  "BUFFER_ACCESS",
 		EntityID:   funcID,
 		LocationID: eventLoc,
 		Properties: `{"array":"buf","index":"64","category":"buffer_overflow"}`,
-	})
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
 
 	candidates := []Candidate{
 		{VariableName: "buf", FileID: fileID, Line: 10, NonNullable: true, LocationID: candidateLoc},
