@@ -9,6 +9,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/scanwalk"
 )
 
 func readFile(path string) ([]byte, error) {
@@ -51,36 +52,18 @@ func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *
 			return f
 		}
 	}
+	files := make([]*db.File, 0, len(order))
 	for _, fid := range order {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		file := fileByID(fid)
-		if file == nil {
-			continue
+		if file := fileByID(fid); file != nil {
+			files = append(files, file)
 		}
-		source, err := readFile(file.Path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("graph: read file failed, skipping", "file", file.Path, "error", err)
-			}
-			continue
-		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("graph: parse file failed, skipping", "file", file.Path, "error", err)
-			}
-			continue
-		}
-		func() {
-			defer tree.Release()
-			fn(file, tree.RootNode(), byFile(fid))
-		}()
 	}
-	return nil
+	return scanwalk.Each(ctx, p, logger, "graph", files, func(file *db.File, root parser.Node, tree *parser.Tree) {
+		fn(file, root, byFile(file.ID))
+	})
 }
 
 // nodesInRange returns the sub-slice of nodes whose StartLine is in
