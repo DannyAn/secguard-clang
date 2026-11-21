@@ -502,11 +502,14 @@ func bareConditionVars(cond *parser.Node) []string {
 // target's real uses live in other functions and are invisible here, and a
 // field/pointed-to target is the fieldValidatedElsewhere escape's business,
 // not a consumer census.
-func allUsesNullSafe(vars []string, call parser.Node, f *db.Function, ids []parser.Node, checked map[string]bool, sums *funcSummaries, retTypes map[string]string, isLocal func(string) bool) bool {
+// scanUsageTargets validates the assigned bare-local targets and finds the
+// first rebind line. allUsesNullSafe and neverUsedAfter used to copy this
+// prelude; they differ only in how they classify the remaining occurrences.
+func scanUsageTargets(vars []string, call parser.Node, f *db.Function, ids []parser.Node, isLocal func(string) bool) (map[string]bool, *parser.Node, int, bool) {
 	targets := make(map[string]bool, len(vars))
 	for _, v := range vars {
 		if v == "" || strings.ContainsAny(v, ".[>*") || !isLocal(v) {
-			return false
+			return nil, nil, 0, false
 		}
 		targets[v] = true
 	}
@@ -522,6 +525,14 @@ func allUsesNullSafe(vars []string, call parser.Node, f *db.Function, ids []pars
 		if isRebindTarget(id) && (rebindLine == 0 || id.StartLine() < rebindLine) {
 			rebindLine = id.StartLine()
 		}
+	}
+	return targets, allocStmt, rebindLine, true
+}
+
+func allUsesNullSafe(vars []string, call parser.Node, f *db.Function, ids []parser.Node, checked map[string]bool, sums *funcSummaries, retTypes map[string]string, isLocal func(string) bool) bool {
+	targets, allocStmt, rebindLine, ok := scanUsageTargets(vars, call, f, ids, isLocal)
+	if !ok {
+		return false
 	}
 	for _, id := range ids {
 		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() < call.StartLine() {
@@ -1739,30 +1750,10 @@ var nullSafeFreeCalls = map[string]bool{"free": true, "cfree": true, "kfree": tr
 // field/subscript write or read, another call, a return — disqualifies the
 // suppression, so a macro that hides a dereference is not swallowed.
 func neverUsedAfter(vars []string, call parser.Node, f *db.Function, ids []parser.Node, isLocal func(string) bool) bool {
-	targets := make(map[string]bool, len(vars))
-	for _, v := range vars {
-		// Only a bare local identifier can be judged: `*p = malloc(n)` stores
-		// into a pointed-to location, and `obj->f = malloc(n)` into a field,
-		// whose aliases this function cannot see.
-		if v == "" || strings.ContainsAny(v, ".[>*") || !isLocal(v) {
-			return false
-		}
-		targets[v] = true
+	targets, allocStmt, rebindLine, ok := scanUsageTargets(vars, call, f, ids, isLocal)
+	if !ok {
+		return false
 	}
-	allocStmt := storeStatementOfCall(call)
-	rebindLine := 0
-	for _, id := range ids {
-		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() <= call.StartLine() {
-			continue
-		}
-		if allocStmt != nil && nodeContains(*allocStmt, id) {
-			continue
-		}
-		if isRebindTarget(id) && (rebindLine == 0 || id.StartLine() < rebindLine) {
-			rebindLine = id.StartLine()
-		}
-	}
-	freed := 0
 	for _, id := range ids {
 		if !targets[id.Text()] || !funcLineRange(f, id.StartLine()) || id.StartLine() < call.StartLine() {
 			continue
@@ -1782,7 +1773,6 @@ func neverUsedAfter(vars []string, call parser.Node, f *db.Function, ids []parse
 		if !nullSafeFreedArg(id) {
 			return false
 		}
-		freed++
 	}
 	return true
 }
