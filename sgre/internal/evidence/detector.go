@@ -3,7 +3,6 @@ package evidence
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +12,7 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/graph"
 	"github.com/DannyAn/secguard-clang/internal/log"
 	"github.com/DannyAn/secguard-clang/internal/parser"
+	"github.com/DannyAn/secguard-clang/internal/scanwalk"
 )
 
 type Detector interface {
@@ -52,32 +52,7 @@ type DomainAware interface {
 // releasing the tree immediately. It is the shared core of the three traversal
 // helpers below; each keeps only its own file-selection rule.
 func forEachParsedFile(ctx context.Context, p *parser.Parser, logger *log.Logger, files []*db.File, fn func(file *db.File, root parser.Node, tree *parser.Tree)) error {
-	for _, file := range files {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("evidence: read file failed, skipping", "file", file.Path, "error", err)
-			}
-			continue
-		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("evidence: parse file failed, skipping", "file", file.Path, "error", err)
-			}
-			continue
-		}
-		func() {
-			defer tree.Release()
-			fn(file, tree.RootNode(), tree)
-		}()
-	}
-	return nil
+	return scanwalk.Each(ctx, p, logger, "evidence", files, fn)
 }
 
 func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree)) error {
