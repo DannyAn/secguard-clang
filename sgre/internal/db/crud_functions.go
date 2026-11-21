@@ -49,23 +49,35 @@ func (s *store) GetFunctionByName(ctx context.Context, name string) (*Function, 
 }
 
 func (s *store) ListFunctionsByFile(ctx context.Context, fileID int64) ([]*Function, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, file_id, name, signature, return_type, is_static, start_line, end_line FROM functions WHERE file_id = ? ORDER BY start_line`, fileID)
+	funcs, err := queryList(ctx, s.exec,
+		`SELECT id, file_id, name, signature, return_type, is_static, start_line, end_line FROM functions WHERE file_id = ? ORDER BY start_line`, []interface{}{fileID},
+		func(rows *sql.Rows) (*Function, error) {
+			f := &Function{}
+			if err := rows.Scan(&f.ID, &f.FileID, &f.Name, &f.Signature, &f.ReturnType, &f.IsStatic, &f.StartLine, &f.EndLine); err != nil {
+				return nil, err
+			}
+			return f, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list functions by file: %w", err)
 	}
-	defer rows.Close()
-	return scanFunctions(rows)
+	return funcs, nil
 }
 
 func (s *store) ListFunctions(ctx context.Context) ([]*Function, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, file_id, name, signature, return_type, is_static, start_line, end_line FROM functions ORDER BY id`)
+	funcs, err := queryList(ctx, s.exec,
+		`SELECT id, file_id, name, signature, return_type, is_static, start_line, end_line FROM functions ORDER BY id`, nil,
+		func(rows *sql.Rows) (*Function, error) {
+			f := &Function{}
+			if err := rows.Scan(&f.ID, &f.FileID, &f.Name, &f.Signature, &f.ReturnType, &f.IsStatic, &f.StartLine, &f.EndLine); err != nil {
+				return nil, err
+			}
+			return f, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list functions: %w", err)
 	}
-	defer rows.Close()
-	return scanFunctions(rows)
+	return funcs, nil
 }
 
 // CountFunctions returns the number of indexed functions without loading the
@@ -97,16 +109,4 @@ func (s *store) DeleteFunctionsByFile(ctx context.Context, fileID int64) error {
 		return fmt.Errorf("db: delete functions by file: %w", err)
 	}
 	return nil
-}
-
-func scanFunctions(rows *sql.Rows) ([]*Function, error) {
-	var funcs []*Function
-	for rows.Next() {
-		f := &Function{}
-		if err := rows.Scan(&f.ID, &f.FileID, &f.Name, &f.Signature, &f.ReturnType, &f.IsStatic, &f.StartLine, &f.EndLine); err != nil {
-			return nil, fmt.Errorf("db: scan function: %w", err)
-		}
-		funcs = append(funcs, f)
-	}
-	return funcs, rows.Err()
 }

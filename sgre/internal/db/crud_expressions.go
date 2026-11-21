@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -20,19 +21,17 @@ func (s *store) InsertExpression(ctx context.Context, e *Expression) (int64, err
 }
 
 func (s *store) ListExpressionsByFunction(ctx context.Context, functionID int64) ([]*Expression, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, function_id, text, line, expr_type FROM expressions WHERE function_id = ? ORDER BY line`, functionID)
+	exprs, err := queryList(ctx, s.exec,
+		`SELECT id, function_id, text, line, expr_type FROM expressions WHERE function_id = ? ORDER BY line`, []interface{}{functionID},
+		func(rows *sql.Rows) (*Expression, error) {
+			e := &Expression{}
+			if err := rows.Scan(&e.ID, &e.FunctionID, &e.Text, &e.Line, &e.ExprType); err != nil {
+				return nil, err
+			}
+			return e, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list expressions by function: %w", err)
 	}
-	defer rows.Close()
-	var exprs []*Expression
-	for rows.Next() {
-		e := &Expression{}
-		if err := rows.Scan(&e.ID, &e.FunctionID, &e.Text, &e.Line, &e.ExprType); err != nil {
-			return nil, fmt.Errorf("db: scan expression: %w", err)
-		}
-		exprs = append(exprs, e)
-	}
-	return exprs, rows.Err()
+	return exprs, nil
 }

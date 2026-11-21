@@ -55,21 +55,19 @@ func (s *store) GetFileByPath(ctx context.Context, path string) (*File, error) {
 }
 
 func (s *store) ListFiles(ctx context.Context) ([]*File, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, path, language, checksum, loc, created_at FROM files ORDER BY id`)
+	files, err := queryList(ctx, s.exec,
+		`SELECT id, path, language, checksum, loc, created_at FROM files ORDER BY id`, nil,
+		func(rows *sql.Rows) (*File, error) {
+			f := &File{}
+			if err := rows.Scan(&f.ID, &f.Path, &f.Language, &f.Checksum, &f.LOC, &f.CreatedAt); err != nil {
+				return nil, err
+			}
+			return f, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list files: %w", err)
 	}
-	defer rows.Close()
-	var files []*File
-	for rows.Next() {
-		f := &File{}
-		if err := rows.Scan(&f.ID, &f.Path, &f.Language, &f.Checksum, &f.LOC, &f.CreatedAt); err != nil {
-			return nil, fmt.Errorf("db: list files: scan: %w", err)
-		}
-		files = append(files, f)
-	}
-	return files, rows.Err()
+	return files, nil
 }
 
 func (s *store) UpdateFileChecksum(ctx context.Context, id int64, checksum string, loc int) error {

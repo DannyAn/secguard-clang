@@ -55,39 +55,35 @@ func (s *store) GetOrCreateGraphNode(ctx context.Context, entityType string, ent
 }
 
 func (s *store) ListGraphNodesByEntity(ctx context.Context, entityType string, entityID int64) ([]*GraphNode, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, entity_type, entity_id, properties FROM graph_nodes WHERE entity_type = ? AND entity_id = ?`, entityType, entityID)
+	nodes, err := queryList(ctx, s.exec,
+		`SELECT id, entity_type, entity_id, properties FROM graph_nodes WHERE entity_type = ? AND entity_id = ?`, []interface{}{entityType, entityID},
+		func(rows *sql.Rows) (*GraphNode, error) {
+			n := &GraphNode{}
+			if err := rows.Scan(&n.ID, &n.EntityType, &n.EntityID, &n.Properties); err != nil {
+				return nil, err
+			}
+			return n, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list graph nodes by entity: %w", err)
 	}
-	defer rows.Close()
-	var nodes []*GraphNode
-	for rows.Next() {
-		n := &GraphNode{}
-		if err := rows.Scan(&n.ID, &n.EntityType, &n.EntityID, &n.Properties); err != nil {
-			return nil, fmt.Errorf("db: scan graph node: %w", err)
-		}
-		nodes = append(nodes, n)
-	}
-	return nodes, rows.Err()
+	return nodes, nil
 }
 
 func (s *store) ListGraphNodesByEntityType(ctx context.Context, entityType string) ([]*GraphNode, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, entity_type, entity_id, properties FROM graph_nodes WHERE entity_type = ?`, entityType)
+	nodes, err := queryList(ctx, s.exec,
+		`SELECT id, entity_type, entity_id, properties FROM graph_nodes WHERE entity_type = ?`, []interface{}{entityType},
+		func(rows *sql.Rows) (*GraphNode, error) {
+			n := &GraphNode{}
+			if err := rows.Scan(&n.ID, &n.EntityType, &n.EntityID, &n.Properties); err != nil {
+				return nil, err
+			}
+			return n, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list graph nodes by entity type: %w", err)
 	}
-	defer rows.Close()
-	var nodes []*GraphNode
-	for rows.Next() {
-		n := &GraphNode{}
-		if err := rows.Scan(&n.ID, &n.EntityType, &n.EntityID, &n.Properties); err != nil {
-			return nil, fmt.Errorf("db: scan graph node: %w", err)
-		}
-		nodes = append(nodes, n)
-	}
-	return nodes, rows.Err()
+	return nodes, nil
 }
 
 func (s *store) InsertGraphEdge(ctx context.Context, e *GraphEdge) (int64, error) {
@@ -154,33 +150,51 @@ func (s *store) ClearGraph(ctx context.Context) error {
 }
 
 func (s *store) ListGraphEdgesByType(ctx context.Context, edgeType string) ([]*GraphEdge, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, src_id, dst_id, edge_type, properties FROM graph_edges WHERE edge_type = ? ORDER BY id`, edgeType)
+	edges, err := queryList(ctx, s.exec,
+		`SELECT id, src_id, dst_id, edge_type, properties FROM graph_edges WHERE edge_type = ? ORDER BY id`, []interface{}{edgeType},
+		func(rows *sql.Rows) (*GraphEdge, error) {
+			e := &GraphEdge{}
+			if err := rows.Scan(&e.ID, &e.SrcID, &e.DstID, &e.EdgeType, &e.Properties); err != nil {
+				return nil, err
+			}
+			return e, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list graph edges by type: %w", err)
 	}
-	defer rows.Close()
-	return scanGraphEdges(rows)
+	return edges, nil
 }
 
 func (s *store) ListGraphEdgesFromNode(ctx context.Context, srcID int64, edgeType string) ([]*GraphEdge, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, src_id, dst_id, edge_type, properties FROM graph_edges WHERE src_id = ? AND edge_type = ?`, srcID, edgeType)
+	edges, err := queryList(ctx, s.exec,
+		`SELECT id, src_id, dst_id, edge_type, properties FROM graph_edges WHERE src_id = ? AND edge_type = ?`, []interface{}{srcID, edgeType},
+		func(rows *sql.Rows) (*GraphEdge, error) {
+			e := &GraphEdge{}
+			if err := rows.Scan(&e.ID, &e.SrcID, &e.DstID, &e.EdgeType, &e.Properties); err != nil {
+				return nil, err
+			}
+			return e, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list graph edges from node: %w", err)
 	}
-	defer rows.Close()
-	return scanGraphEdges(rows)
+	return edges, nil
 }
 
 func (s *store) ListGraphEdgesToNode(ctx context.Context, dstID int64, edgeType string) ([]*GraphEdge, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, src_id, dst_id, edge_type, properties FROM graph_edges WHERE dst_id = ? AND edge_type = ?`, dstID, edgeType)
+	edges, err := queryList(ctx, s.exec,
+		`SELECT id, src_id, dst_id, edge_type, properties FROM graph_edges WHERE dst_id = ? AND edge_type = ?`, []interface{}{dstID, edgeType},
+		func(rows *sql.Rows) (*GraphEdge, error) {
+			e := &GraphEdge{}
+			if err := rows.Scan(&e.ID, &e.SrcID, &e.DstID, &e.EdgeType, &e.Properties); err != nil {
+				return nil, err
+			}
+			return e, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list graph edges to node: %w", err)
 	}
-	defer rows.Close()
-	return scanGraphEdges(rows)
+	return edges, nil
 }
 
 func (s *store) ReachableFromEntry(ctx context.Context, entryNodeID int64, edgeType string) ([]int64, error) {
@@ -214,16 +228,4 @@ func (s *store) ReachableFromEntries(ctx context.Context, entryNodeIDs []int64, 
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
-}
-
-func scanGraphEdges(rows *sql.Rows) ([]*GraphEdge, error) {
-	var edges []*GraphEdge
-	for rows.Next() {
-		e := &GraphEdge{}
-		if err := rows.Scan(&e.ID, &e.SrcID, &e.DstID, &e.EdgeType, &e.Properties); err != nil {
-			return nil, fmt.Errorf("db: scan graph edge: %w", err)
-		}
-		edges = append(edges, e)
-	}
-	return edges, rows.Err()
 }

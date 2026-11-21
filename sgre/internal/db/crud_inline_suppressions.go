@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -26,26 +27,21 @@ func (s *store) ReplaceInlineSuppressions(ctx context.Context, fileID int64, sup
 // ListInlineSuppressions returns every suppression directive, keyed by nothing
 // (the caller indexes by file/line). It is the planner filter's input.
 func (s *store) ListInlineSuppressions(ctx context.Context) ([]InlineSuppression, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, file_id, line, vuln_type, reason FROM inline_suppressions`)
+	out, err := queryList(ctx, s.exec,
+		`SELECT id, file_id, line, vuln_type, reason FROM inline_suppressions`, nil,
+		func(rows *sql.Rows) (InlineSuppression, error) {
+			var sup InlineSuppression
+			var reason *string
+			if err := rows.Scan(&sup.ID, &sup.FileID, &sup.Line, &sup.VulnType, &reason); err != nil {
+				return InlineSuppression{}, err
+			}
+			if reason != nil {
+				sup.Reason = *reason
+			}
+			return sup, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list inline suppressions: %w", err)
-	}
-	defer rows.Close()
-	var out []InlineSuppression
-	for rows.Next() {
-		var sup InlineSuppression
-		var reason *string
-		if err := rows.Scan(&sup.ID, &sup.FileID, &sup.Line, &sup.VulnType, &reason); err != nil {
-			return nil, fmt.Errorf("db: scan inline suppression: %w", err)
-		}
-		if reason != nil {
-			sup.Reason = *reason
-		}
-		out = append(out, sup)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("db: inline suppressions rows: %w", err)
 	}
 	return out, nil
 }
