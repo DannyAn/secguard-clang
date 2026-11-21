@@ -333,6 +333,11 @@ What it is:
 
   With no file present, secguard uses built-in defaults (an empty config).
 
+  The index-stage advisory <cwd>/.codeagent/secguard-clang/secguard.toml.suggested
+  never replaces the winner above: it only carries discovered allocators/
+  deallocators/ownership-transfer/iterator-macro names and is merged in, filling
+  only the sections the winner left empty (so your [exclude]/[scan]/... survive).
+
   [trusted_macros] — trusted accessor macros
     names = ["..."]
     A macro whose expansion computes a pointer from a memory address

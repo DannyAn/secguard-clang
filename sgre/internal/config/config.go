@@ -797,8 +797,15 @@ func SetExplicitPath(path string) {
 //  2. SECGUARD_CONFIG env var
 //  3. project-level  <cwd>/.codeagent/secguard.toml                     (per-repo exceptions)
 //  4. project-level  <cwd>/.codeagent/secguard-clang/secguard.toml      (adopted suggestion)
-//  5. project-level  <cwd>/.codeagent/secguard-clang/secguard.toml.suggested (index advisory, auto-fallback)
-//  6. user-level     ~/.codeagent/secguard.toml                         (personal default)
+//  5. user-level     ~/.codeagent/secguard.toml                         (personal default)
+//
+// The index-stage advisory <cwd>/.codeagent/secguard-clang/secguard.toml.suggested
+// is NOT a replacement config and does not shadow the above. It only ever
+// carries discovered allocators/deallocators/ownership-transfer/iterator-macro
+// names, so it is MERGED into whichever config (or built-in defaults) won,
+// filling only those sections the winner left empty. A user's personal
+// [exclude]/[scan]/[trusted_macros]/... therefore stays intact while the scan
+// still auto-benefits from the discovered names (issue #303).
 //
 // A missing file is not an error: the caller falls back to built-in behavior.
 // Both default locations share the .codeagent naming, consistent with the
@@ -825,34 +832,42 @@ func Load() *Config {
 func LoadE() (*Config, error) {
 	cfg := &Config{}
 	applyScanDefaults(cfg)
-	path := resolvePath(explicitPath)
-	if path == "" {
-		return cfg, nil
+	if path := resolvePath(explicitPath); path != "" {
+		if err := readConfigInto(cfg, path); err != nil {
+			return cfg, err
+		}
 	}
+	applyScanDefaults(cfg)
+	// The index-stage advisory only carries the discovery sections; merge them
+	// in so they never replace the explicit config's [exclude]/[scan]/
+	// [trusted_macros]/... (issue #303). It is best-effort: a malformed or
+	// unreadable suggestion is skipped, never fatal, because it is auto-generated.
+	if sug := suggestedPath(); sug != "" {
+		mergeSuggestedInto(cfg, sug)
+	}
+	return cfg, nil
+}
+
+// readConfigInto reads and parses path into cfg. A resolved path that cannot be
+// read or parsed is an error, not a silent zero config: a mistyped secguard.toml
+// must never silently disable every detector setting (the historical "written to
+// the project root instead of .codeagent/" failure mode). Missing-file fallback
+// is handled by resolvePath returning "" BEFORE we get here, so a read error
+// here is unexpected.
+func readConfigInto(cfg *Config, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// A path resolved from an explicit --config / SECGUARD_CONFIG (or a
-		// probed default that existed a moment ago) must not fail silently: a
-		// zero config evaporates the banned-function / trusted-macro / disable
-		// settings with no trace. Missing-file fallback is handled by resolvePath
-		// returning "" BEFORE we get here, so a read error here is unexpected.
-		return cfg, fmt.Errorf("read config %s: %w", path, err)
+		return fmt.Errorf("read config %s: %w", path, err)
 	}
 	// A malformed or mistyped config must not be silently ignored: the user would
 	// get a "seems to load" config whose trusted-macro allowlist silently
 	// disappears. Load() has no error channel (the file is optional and a missing
 	// file is not an error), so surface parse failures on stderr and keep the
 	// zero config rather than a half-populated one.
-	//
-	// Return cfg (with applyScanDefaults already applied) — NOT &Config{} — so a
-	// parse failure still gets the bounded cache defaults (MaxCachedTrees=4000
-	// etc). Returning an unbounded &Config{} here would make a malformed config
-	// an OOM vector: the parser/CFG/event buffers would all be unbounded.
 	if err := toml.Unmarshal(data, cfg); err != nil {
-		return cfg, fmt.Errorf("parse config %s: %w", path, err)
+		return fmt.Errorf("parse config %s: %w", path, err)
 	}
-	applyScanDefaults(cfg)
-	return cfg, nil
+	return nil
 }
 
 // applyScanDefaults bounds the per-scan caches unless the user explicitly
@@ -1092,10 +1107,15 @@ func (c *Config) MergedIteratorMacros() map[string][]int {
 
 // ResolvedPath returns the config file path Load() would read, in the same
 // priority order (--config > SECGUARD_CONFIG > project > user), or "" when no
-// config file is active. It is the runtime answer to "where do I put settings",
-// surfaced by `secguard config` so a user never has to guess the location.
+// config file is active. When only the index-stage advisory exists it reports
+// that path (it is the effective discovery source). It is the runtime answer to
+// "where do I put settings", surfaced by `secguard config` so a user never has
+// to guess the location.
 func ResolvedPath() string {
-	return resolvePath(explicitPath)
+	if p := resolvePath(explicitPath); p != "" {
+		return p
+	}
+	return suggestedPath()
 }
 
 // ConfigChecksum returns the SHA256 of the effective config file content, or
@@ -1107,27 +1127,45 @@ func ResolvedPath() string {
 //
 // The checksum is of the raw file bytes, not the parsed struct, so a reformat
 // without a semantic change is a false-positive rebuild — acceptable for a
-// human-authored file that rarely changes. A parse failure returns "default"
-// (not the file bytes) so the checksum stays consistent with LoadE's effective
-// config: a malformed config means the zero defaults are in effect, and
-// "default" is their checksum. Without this, a persistently malformed config
-// would record a non-"default" checksum and a later repair would not trigger a
-// rebuild (same bytes → same checksum → canReuse=true → stale graph).
+// human-authored file that rarely changes. A parse failure of the EXPLICIT
+// config returns "default" (not the file bytes) so the checksum stays
+// consistent with LoadE's effective config: a malformed config means the zero
+// defaults are in effect, and "default" is their checksum. Without this, a
+// persistently malformed config would record a non-"default" checksum and a
+// later repair would not trigger a rebuild (same bytes → same checksum →
+// canReuse=true → stale graph). The index-stage advisory contributes its bytes
+// only when it parses (matching mergeSuggestedInto's best-effort skip).
 func ConfigChecksum() string {
-	path := resolvePath(explicitPath)
-	if path == "" {
+	h := sha256.New()
+	contributed := false
+	if p := resolvePath(explicitPath); p != "" {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return "default"
+		}
+		var probe Config
+		if err := toml.Unmarshal(data, &probe); err != nil {
+			return "default"
+		}
+		h.Write(data)
+		h.Write([]byte{0})
+		contributed = true
+	}
+	if sug := suggestedPath(); sug != "" {
+		data, err := os.ReadFile(sug)
+		if err == nil {
+			var probe Config
+			if err := toml.Unmarshal(data, &probe); err == nil {
+				h.Write(data)
+				h.Write([]byte{0})
+				contributed = true
+			}
+		}
+	}
+	if !contributed {
 		return "default"
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "default"
-	}
-	var probe Config
-	if err := toml.Unmarshal(data, &probe); err != nil {
-		return "default"
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func resolvePath(explicit string) string {
@@ -1147,15 +1185,6 @@ func resolvePath(explicit string) string {
 		if p := filepath.Join(cwd, ".codeagent", "secguard-clang", "secguard.toml"); fileExists(p) {
 			return p
 		}
-		// Advisory fallback: the index stage wrote secguard.toml.suggested
-		// but the user has not adopted it yet. Load it as a fallback so a
-		// scan immediately benefits from the discovered allocators/
-		// deallocators/ownership-transfers/iterator-macros without a manual
-		// rename. The low-confidence entries are commented out in the file,
-		// so only high/medium entries activate.
-		if p := filepath.Join(cwd, ".codeagent", "secguard-clang", "secguard.toml.suggested"); fileExists(p) {
-			return p
-		}
 	}
 	if h := homeDir(); h != "" {
 		if p := filepath.Join(h, ".codeagent", "secguard.toml"); fileExists(p) {
@@ -1163,6 +1192,45 @@ func resolvePath(explicit string) string {
 		}
 	}
 	return ""
+}
+
+// suggestedPath returns the index-stage advisory suggestion path when it exists,
+// or "". The suggestion is never resolved as a replacement config (see Load):
+// it only contributes its discovery sections, merged into the winning config.
+func suggestedPath() string {
+	cwd, err := os.Getwd()
+	if err != nil || cwd == "" {
+		return ""
+	}
+	p := filepath.Join(cwd, ".codeagent", "secguard-clang", "secguard.toml.suggested")
+	if fileExists(p) {
+		return p
+	}
+	return ""
+}
+
+// mergeSuggestedInto overlays the discovery sections of the index-stage advisory
+// (allocators/deallocators/ownership-transfer calls/iterator macros) onto cfg,
+// filling only the sections cfg left empty. It is best-effort: an unreadable or
+// malformed suggestion contributes nothing, matching the index stage's own
+// bypass-on-failure contract for this auto-generated file.
+func mergeSuggestedInto(cfg *Config, path string) {
+	var sug Config
+	if err := readConfigInto(&sug, path); err != nil {
+		return
+	}
+	if len(cfg.Allocators.Names) == 0 {
+		cfg.Allocators.Names = sug.Allocators.Names
+	}
+	if len(cfg.Deallocators.Names) == 0 {
+		cfg.Deallocators.Names = sug.Deallocators.Names
+	}
+	if len(cfg.OwnershipTransferCalls.Names) == 0 {
+		cfg.OwnershipTransferCalls.Names = sug.OwnershipTransferCalls.Names
+	}
+	if len(cfg.IteratorMacros.Macros) == 0 {
+		cfg.IteratorMacros.Macros = sug.IteratorMacros.Macros
+	}
 }
 
 func fileExists(p string) bool {

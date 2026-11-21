@@ -204,6 +204,117 @@ names = ["my_malloc"]
 	}
 }
 
+// TestResolvePath_UserConfigWinsOverSuggested pins the issue #303 fix: the
+// index-stage advisory (secguard.toml.suggested) must NOT shadow the user-level
+// ~/.codeagent/secguard.toml. The user config's [exclude] directories must stay
+// active even when a project has an unadopted suggestion file.
+func TestResolvePath_UserConfigWinsOverSuggested(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	user := filepath.Join(home, ".codeagent", "secguard.toml")
+	sug := filepath.Join(dir, ".codeagent", "secguard-clang", "secguard.toml.suggested")
+	if err := os.MkdirAll(filepath.Dir(user), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sug), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(user, []byte(`[exclude]
+paths = ["third_party"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sug, []byte(`[allocators]
+names = ["my_malloc"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Setenv("HOME", home)
+	t.Chdir(dir)
+
+	if got := ResolvedPath(); got != user {
+		t.Errorf("ResolvedPath = %q, want user-level %q (suggestion must not shadow it)", got, user)
+	}
+	cfg := Load()
+	if got := cfg.ExcludePaths(); len(got) != 1 || got[0] != "third_party" {
+		t.Errorf("ExcludePaths = %v, want [third_party] (user-level exclude must survive)", got)
+	}
+	// The suggestion's discovery section still auto-applies, merged alongside.
+	if got := cfg.AllocatorNames(); len(got) != 1 || got[0] != "my_malloc" {
+		t.Errorf("AllocatorNames = %v, want [my_malloc] (suggestion discovery should merge)", got)
+	}
+}
+
+// TestLoad_SuggestedDoesNotOverrideUserSections pins the merge direction: the
+// advisory only fills discovery sections and never replaces a user-declared
+// discovery section. A user [allocators] list wins over the suggestion's.
+func TestLoad_SuggestedDoesNotOverrideUserSections(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	user := filepath.Join(home, ".codeagent", "secguard.toml")
+	sug := filepath.Join(dir, ".codeagent", "secguard-clang", "secguard.toml.suggested")
+	for _, p := range []string{user, sug} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(user, []byte(`[allocators]
+names = ["user_malloc"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sug, []byte(`[allocators]
+names = ["sug_malloc"]
+[deallocators]
+names = ["sug_free"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Setenv("HOME", home)
+	t.Chdir(dir)
+
+	cfg := Load()
+	if got := cfg.AllocatorNames(); len(got) != 1 || got[0] != "user_malloc" {
+		t.Errorf("AllocatorNames = %v, want [user_malloc] (user section must win)", got)
+	}
+	if got := cfg.DeallocatorNames(); len(got) != 1 || got[0] != "sug_free" {
+		t.Errorf("DeallocatorNames = %v, want [sug_free] (suggestion fills the empty section)", got)
+	}
+}
+
+// TestLoad_SuggestedAppliesWhenNoConfig pins the advisory fallback still works
+// with no explicit config at all: the suggestion's discovery sections become the
+// effective config, and ResolvedPath reports the suggestion path.
+func TestLoad_SuggestedAppliesWhenNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	sug := filepath.Join(dir, ".codeagent", "secguard-clang", "secguard.toml.suggested")
+	if err := os.MkdirAll(filepath.Dir(sug), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sug, []byte(`[deallocators]
+names = ["my_free"]
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Setenv("HOME", home)
+	t.Chdir(dir)
+
+	if got := ResolvedPath(); got != sug {
+		t.Errorf("ResolvedPath = %q, want suggested %q", got, sug)
+	}
+	cfg := Load()
+	if got := cfg.DeallocatorNames(); len(got) != 1 || got[0] != "my_free" {
+		t.Errorf("DeallocatorNames = %v, want [my_free]", got)
+	}
+}
+
 func TestResolvePath_DocumentedProjectWinsOverSuggestion(t *testing.T) {
 	dir := t.TempDir()
 	doc := filepath.Join(dir, ".codeagent", "secguard.toml")
