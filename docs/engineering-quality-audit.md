@@ -15,7 +15,7 @@
 >
 > **复核修正**：初版报告把 Crapper / Dryer / Mutator 记为“未安装”，这是错误的——三者一直在 `~/.local/bin`，现在已用于复核；初版的复杂度/CRAP/重复率结论已按工具输出修正，并新增了静态检查、变异测试与系统性重复的证据。详细修正见 §3.7。
 >
-> **阶段二执行状态（2026-11-21）**：PR #309（批次 1–4，merge `79986b8`）与 PR #310（批次 5，merge `b8ee94d`）已合入 main；本批新增 M-07 的 chunked `List*ByIDs` 统一（commit `5e896ac`）。剩余 U3a/U3b、M-07 其余模板、U7b、U4b graph 侧、M-12、L-03/L-04 见 §9/§10。§6 L-01 保留审计时的清单描述。
+> **阶段二执行状态（2026-11-21）**：PR #309/#310/#311 已合入 main（`2b3fc0a`），M-07 chunked `List*ByIDs`（`5e896ac`）已在 main；本批完成 U4b 的 evidence/graph 共同遍历（`internal/scanwalk`，commit `385d441`）。剩余 U3a/U3b、M-07 其余模板、U7b、M-12、L-03/L-04 见 §9/§10。§6 L-01 保留审计时的清单描述。
 
 ---
 
@@ -621,7 +621,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | U7a uninit 参数结构体 | 完成（参数层） | `uninitScanInputs` 替换 20/14/13 位置参数；676/505/272 行函数体仍未拆分 |
 | U3a 测试错误传播基座 | 未完成 | 383 处裸 `.Build(ctx)` + 765 条测试 errcheck；需按包分批，规模大、纯测试改动 |
 | U3b 零覆盖检测路径补测 | 未完成 | relationalNonZeroVar、do-while CFG、计划摘要等；需逐函数设计用例 |
-| U4b 文件遍历骨架统一 | 部分完成 | evidence 三变体已收敛到 `forEachParsedFile`；graph 副本仍受 RepoIndex 跨包边界限制 |
+| U4b 文件遍历骨架统一 | 完成 | `internal/scanwalk.Each` 统一 evidence/graph 的 ReadFile+ParseCached+Release；新增 parse/skip/cancel 测试（commit `385d441`） |
 | U4d 数据流加载器统一 | 完成 | `loadVarRefMaps` 单源；DATA_FLOW/ALIAS/RELEASE 加载器只保留边处理 |
 | U6 中型去重 | 完成 | `buildRangeFlowsForCandidates`、`collectFileScope`、`classifyUnsignedCompare`、`firstFormatTaintArg`、`scanUsageTargets` |
 | M-07 DB 模板去重 | 部分完成 | `listByIDs` 统一 4 个 chunked `List*ByIDs`（commit `5e896ac`）；其余 scan/CRUD 模板与 Dryer 大块未做 |
@@ -629,7 +629,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | M-12 源文件重复读取 | 未完成 | 需在大语料量化 I/O 后再决定缓存方案 |
 | L-03/L-04 基准与 CWE parity | 未完成 | 0 个 Benchmark；db 默认 CWE 集合仍需 parity 测试 |
 
-**验证基线（合入 main + 本批 M-07）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。历史批次 #309/#310 已合入 main `b8ee94d`；本批在 main 上新增 M-07 commit `5e896ac`。
+**验证基线（合入 main + 本批 U4b）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。历史 #309/#310/#311 已合入 main `2b3fc0a`；本批新增 U4b commit `385d441`。
 
 
 ---
@@ -679,6 +679,7 @@ git cherry-pick 44ea5b2   # batch3: U4b evidence traversal
 git cherry-pick d8a33f5   # batch4: U6 signed/injection helpers
 git cherry-pick 4cf10a0   # batch5: U6 unchecked-return helper
 git cherry-pick 5e896ac   # M-07 chunked List*ByIDs
+git cherry-pick 385d441   # U4b shared scanwalk (evidence + graph)
 # 文档提交可按需 cherry-pick：ba05a99、faa51a6、0c3a331，或直接保留本报告
 ```
 
@@ -762,6 +763,7 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 | U6 signed/injection | `d8a33f5` | `classifyUnsignedCompare`、`firstFormatTaintArg` | 相关检测器测试 + 基准 |
 | U6 unchecked-return | `4cf10a0` | `scanUsageTargets`；删未读 `freed` | 相关检测器测试 + 基准 |
 | M-07 chunked List | `5e896ac` | `listByIDs` 统一 4 个 `List*ByIDs` | `go test ./internal/db` + 全测试 + 基准 |
+| U4b evidence/graph 遍历 | `385d441` | `internal/scanwalk.Each` 统一读/解析/释放循环 | `go test ./internal/scanwalk` + evidence/graph + 全测试 |
 
 回滚：每个单元可以用 `git revert <commit>` 或恢复该单元涉及的文件；已合入的提交都在 main 历史中，revert 后必须重跑 10.3 全部门禁。U1b 的 `parser.SetLanguage` 错误处理只在“语言版本不匹配”时改变行为，回滚时注意保留 error 语义。
 
@@ -794,13 +796,6 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 - **做法**：先为 `--list/--list-auto-confirmed/--write/--write-json/--audit/--review/--stats` 各建 golden 输出（JSON 字段集、SARIF、DB 写入顺序）；再抽 `runReportListAutoConfirmed`/`runReportWrite`/`runReportAudit`/`runReportReview`/`runReportStats`；入口只保留参数解析和 DB 打开。
 - **验收**：golden 逐字节/逐字段一致；`report --audit` 端到端；基准 SARIF 不变。
 - **风险**：DB 写入顺序、JSON 省略规则、SARIF 排序；这是独立大型 PR，不要与去重混在一起。
-
-#### U4b graph 侧遍历副本
-
-- **证据**：`graph/helpers.go:27` 仍复制 evidence 的遍历骨架；不能直接 import evidence（分层反向）。
-- **做法**：把 RepoIndex/file 遍历下沉到不依赖 graph 的小包，或让 graph 的遍历接受一个 file source 回调；不要让 graph import evidence。
-- **验收**：graph 构建器测试 + 全测试 + 基准。
-- **风险**：RepoIndex 上下文/日志前缀语义；先证明行为一致。
 
 #### M-12 源文件 I/O
 
