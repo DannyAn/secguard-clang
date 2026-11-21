@@ -47,19 +47,17 @@ func (s *store) ListLocationsByIDs(ctx context.Context, ids []int64) (map[int64]
 }
 
 func (s *store) ListLocationsByFile(ctx context.Context, fileID int64) ([]*Location, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, file_id, line, column FROM locations WHERE file_id = ? ORDER BY line`, fileID)
+	locs, err := queryList(ctx, s.exec,
+		`SELECT id, file_id, line, column FROM locations WHERE file_id = ? ORDER BY line`, []interface{}{fileID},
+		func(rows *sql.Rows) (*Location, error) {
+			loc := &Location{}
+			if err := rows.Scan(&loc.ID, &loc.FileID, &loc.Line, &loc.Column); err != nil {
+				return nil, err
+			}
+			return loc, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list locations by file: %w", err)
 	}
-	defer rows.Close()
-	var locs []*Location
-	for rows.Next() {
-		loc := &Location{}
-		if err := rows.Scan(&loc.ID, &loc.FileID, &loc.Line, &loc.Column); err != nil {
-			return nil, fmt.Errorf("db: scan location: %w", err)
-		}
-		locs = append(locs, loc)
-	}
-	return locs, rows.Err()
+	return locs, nil
 }

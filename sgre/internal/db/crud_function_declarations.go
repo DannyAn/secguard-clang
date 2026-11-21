@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -20,22 +21,19 @@ func (s *store) InsertFunctionDeclaration(ctx context.Context, d *FunctionDeclar
 }
 
 func (s *store) ListFunctionDeclarations(ctx context.Context) ([]*FunctionDeclaration, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, file_id, name, signature, return_type, start_line FROM function_declarations ORDER BY id`)
+	declarations, err := queryList(ctx, s.exec,
+		`SELECT id, file_id, name, signature, return_type, start_line FROM function_declarations ORDER BY id`, nil,
+		func(rows *sql.Rows) (*FunctionDeclaration, error) {
+			d := &FunctionDeclaration{}
+			if err := rows.Scan(&d.ID, &d.FileID, &d.Name, &d.Signature, &d.ReturnType, &d.StartLine); err != nil {
+				return nil, err
+			}
+			return d, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list function declarations: %w", err)
 	}
-	defer rows.Close()
-
-	var declarations []*FunctionDeclaration
-	for rows.Next() {
-		d := &FunctionDeclaration{}
-		if err := rows.Scan(&d.ID, &d.FileID, &d.Name, &d.Signature, &d.ReturnType, &d.StartLine); err != nil {
-			return nil, fmt.Errorf("db: scan function declaration: %w", err)
-		}
-		declarations = append(declarations, d)
-	}
-	return declarations, rows.Err()
+	return declarations, nil
 }
 
 func (s *store) DeleteFunctionDeclarationsByFile(ctx context.Context, fileID int64) error {

@@ -34,19 +34,17 @@ func (s *store) GetTypeByName(ctx context.Context, name string) (*Type, error) {
 }
 
 func (s *store) ListTypes(ctx context.Context) ([]*Type, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, name, kind FROM types ORDER BY id`)
+	types, err := queryList(ctx, s.exec,
+		`SELECT id, name, kind FROM types ORDER BY id`, nil,
+		func(rows *sql.Rows) (*Type, error) {
+			ty := &Type{}
+			if err := rows.Scan(&ty.ID, &ty.Name, &ty.Kind); err != nil {
+				return nil, err
+			}
+			return ty, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list types: %w", err)
 	}
-	defer rows.Close()
-	var types []*Type
-	for rows.Next() {
-		ty := &Type{}
-		if err := rows.Scan(&ty.ID, &ty.Name, &ty.Kind); err != nil {
-			return nil, fmt.Errorf("db: scan type: %w", err)
-		}
-		types = append(types, ty)
-	}
-	return types, rows.Err()
+	return types, nil
 }
