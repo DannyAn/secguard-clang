@@ -1983,17 +1983,27 @@ func fieldAccessName(dst string) string {
 // file's field_declarations (`struct S { T field; }`). It returns the type
 // spelling only when every declaration of that field name agrees on one type
 // (mirroring findFieldArraySize's ambiguity guard); otherwise "".
+// fieldDeclarationName returns the declared name of a struct field, descending
+// pointer/array declarators so `char *b` and `int a[4]` are not invisible.
+func fieldDeclarationName(fd parser.Node) string {
+	for _, child := range fd.NamedChildren() {
+		switch child.Kind() {
+		case "field_identifier":
+			return child.Text()
+		case "pointer_declarator", "array_declarator":
+			if name := arrayDeclaratorName(child); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
 func findFieldTypeName(bc *bufCtx, field string) string {
 	seen := make(map[string]bool)
 	var found string
 	for _, fd := range bc.fields {
-		hasField := false
-		for _, child := range fd.NamedChildren() {
-			if child.Kind() == "field_identifier" && child.Text() == field {
-				hasField = true
-			}
-		}
-		if !hasField {
+		if fieldDeclarationName(fd) != field {
 			continue
 		}
 		t := typeSpelling(fd)
