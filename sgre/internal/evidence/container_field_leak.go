@@ -934,12 +934,18 @@ func collectContainerSlots(facts *containerLeakFacts, f *db.Function, inits, ass
 		name := extractCallName(call)
 		args := getCallArgs(call)
 		macroFree := macros[name].freesArg
-		dealloc := apikb.IsDeallocator(name)
 		s := summaries[name]
+		declaredDealloc := apikb.IsDeclaredDeallocator(name)
+		heuristicDealloc := apikb.IsDeallocator(name) && !declaredDealloc
 		for ai, arg := range args {
-			// A deallocator / freeing macro releases its FIRST argument only; a
-			// summary's per-parameter facts decide the rest.
-			directFreeArg := (ai == 0 && (dealloc || macroFree)) || (s != nil && s.ParamDirectFrees[ai])
+			// A DECLARED deallocator / freeing macro releases its FIRST argument
+			// by contract; a heuristic deallocator name (ends "free"/"_destroy"/
+			// "_delete"/...) proves nothing on its own, so its per-parameter
+			// facts come from the summary. An external heuristic deallocator
+			// (no in-tree summary) keeps the first-argument name convention.
+			directFreeArg := (ai == 0 && (declaredDealloc || macroFree)) ||
+				(s != nil && s.ParamDirectFrees[ai]) ||
+				(ai == 0 && heuristicDealloc && s == nil)
 			// A direct release of the slot itself: `free(g[i])`.
 			if c, slot, ok := containerSlotOf(arg, facts, localVars); ok && directFreeArg {
 				releases = append(releases, containerObjRelease{container: c.name, slot: slot, line: call.StartLine(), api: name})
