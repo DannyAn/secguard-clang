@@ -15,7 +15,7 @@
 >
 > **复核修正**：初版报告把 Crapper / Dryer / Mutator 记为“未安装”，这是错误的——三者一直在 `~/.local/bin`，现在已用于复核；初版的复杂度/CRAP/重复率结论已按工具输出修正，并新增了静态检查、变异测试与系统性重复的证据。详细修正见 §3.7。
 >
-> **阶段二执行状态（2026-11-21）**：PR #309/#310/#311 已合入 main（`2b3fc0a`），M-07 chunked `List*ByIDs`（`5e896ac`）已在 main；本批完成 U4b 的 evidence/graph 共同遍历（`internal/scanwalk`，commit `385d441`）。剩余 U3a/U3b、M-07 其余模板、U7b、M-12、L-03/L-04 见 §9/§10。§6 L-01 保留审计时的清单描述。
+> **阶段二执行状态（2026-11-21）**：PR #309/#310/#311/#312 已合入 main（`a6ec963`）；M-07 chunked `List*ByIDs`（`5e896ac`）与 U4b `internal/scanwalk`（`385d441`）已在 main。本批完成 U3b 的前两条零覆盖路径：do-while CFG 与 `relationalNonZeroVar`（commit `5f185c2`）。剩余 U3a、U3b 其余零覆盖路径、M-07 其余模板、U7b、M-12、L-03/L-04 见 §9/§10。§6 L-01 保留审计时的清单描述。
 
 ---
 
@@ -620,7 +620,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | U5 CI 门禁 | 完成 | 新增 `.github/workflows/go-quality.yml`：gofmt + vet + 全量 test + staticcheck |
 | U7a uninit 参数结构体 | 完成（参数层） | `uninitScanInputs` 替换 20/14/13 位置参数；676/505/272 行函数体仍未拆分 |
 | U3a 测试错误传播基座 | 未完成 | 383 处裸 `.Build(ctx)` + 765 条测试 errcheck；需按包分批，规模大、纯测试改动 |
-| U3b 零覆盖检测路径补测 | 未完成 | relationalNonZeroVar、do-while CFG、计划摘要等；需逐函数设计用例 |
+| U3b 零覆盖检测路径补测 | 部分完成 | 已补 do-while CFG 与 `relationalNonZeroVar` 测试（commit `5f185c2`）；计划摘要、SubprocessRunner 等其余路径未做 |
 | U4b 文件遍历骨架统一 | 完成 | `internal/scanwalk.Each` 统一 evidence/graph 的 ReadFile+ParseCached+Release；新增 parse/skip/cancel 测试（commit `385d441`） |
 | U4d 数据流加载器统一 | 完成 | `loadVarRefMaps` 单源；DATA_FLOW/ALIAS/RELEASE 加载器只保留边处理 |
 | U6 中型去重 | 完成 | `buildRangeFlowsForCandidates`、`collectFileScope`、`classifyUnsignedCompare`、`firstFormatTaintArg`、`scanUsageTargets` |
@@ -629,7 +629,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | M-12 源文件重复读取 | 未完成 | 需在大语料量化 I/O 后再决定缓存方案 |
 | L-03/L-04 基准与 CWE parity | 未完成 | 0 个 Benchmark；db 默认 CWE 集合仍需 parity 测试 |
 
-**验证基线（合入 main + 本批 U4b）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。历史 #309/#310/#311 已合入 main `2b3fc0a`；本批新增 U4b commit `385d441`。
+**验证基线（合入 main + 本批 U3b 测试）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。历史 #309/#310/#311/#312 已合入 main `a6ec963`；本批新增 U3b 测试 commit `5f185c2`。
 
 
 ---
@@ -680,6 +680,7 @@ git cherry-pick d8a33f5   # batch4: U6 signed/injection helpers
 git cherry-pick 4cf10a0   # batch5: U6 unchecked-return helper
 git cherry-pick 5e896ac   # M-07 chunked List*ByIDs
 git cherry-pick 385d441   # U4b shared scanwalk (evidence + graph)
+git cherry-pick 5f185c2   # U3b do-while CFG + relationalNonZeroVar tests
 # 文档提交可按需 cherry-pick：ba05a99、faa51a6、0c3a331，或直接保留本报告
 ```
 
@@ -764,6 +765,7 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 | U6 unchecked-return | `4cf10a0` | `scanUsageTargets`；删未读 `freed` | 相关检测器测试 + 基准 |
 | M-07 chunked List | `5e896ac` | `listByIDs` 统一 4 个 `List*ByIDs` | `go test ./internal/db` + 全测试 + 基准 |
 | U4b evidence/graph 遍历 | `385d441` | `internal/scanwalk.Each` 统一读/解析/释放循环 | `go test ./internal/scanwalk` + evidence/graph + 全测试 |
+| U3b 首批零覆盖测试 | `5f185c2` | do-while CFG 边、`relationalNonZeroVar` 边界 | `go test ./internal/graph ./internal/evidence` |
 
 回滚：每个单元可以用 `git revert <commit>` 或恢复该单元涉及的文件；已合入的提交都在 main 历史中，revert 后必须重跑 10.3 全部门禁。U1b 的 `parser.SetLanguage` 错误处理只在“语言版本不匹配”时改变行为，回滚时注意保留 error 语义。
 
@@ -776,9 +778,9 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 - **验收**：每个包 `go test ./internal/<pkg> -count=1`；最终全测试 + 基准不变。建议按包提交，单包失败不阻塞其他包。
 - **风险**：测试变慢/个别测试原来依赖“builder 失败但测试继续”；先跑基线再改。
 
-#### U3b 零覆盖检测路径（需要设计用例）
+#### U3b 零覆盖检测路径（需要设计用例；do-while/relationalNonZeroVar 已完成，见 10.4）
 
-- **证据**：`relationalNonZeroVar`（divide_by_zero）、`cfgBuilder.buildDo`（do-while CFG）、`BuildPlanSummary`、`SubprocessRunner.Run` 等。
+- **证据**：`BuildPlanSummary`、`SubprocessRunner.Run`、`findFieldTypeName`、`writeSecondCalleeDefinition` 等仍未覆盖。
 - **做法**：用现有 `sgre/testdata` 夹具或新增最小 C fixture；测试断言候选/事件/CFG 结果，而不是内部实现。
 - **验收**：`-coverpkg=./...` 合并覆盖率提升；全测试 + 基准不变。
 - **风险**：新增夹具可能改变基准候选数；只在临时目录/独立测试中运行，不加入 benchmark 语料。
