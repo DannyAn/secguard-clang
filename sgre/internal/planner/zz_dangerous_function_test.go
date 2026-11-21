@@ -31,7 +31,9 @@ func TestDangerousFunction_Suspected(t *testing.T) {
 	if _, err := idx.Index(ctx, filepath.Join("..", "..", "testdata", "tc109_dangerous_function.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	if _, err := evidence.NewDangerousFunctionDetector(store, p, logger).Detect(ctx); err != nil {
 		t.Fatalf("detect: %v", err)
 	}
@@ -75,7 +77,9 @@ int f(int flags) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	if _, err := evidence.NewDangerousFunctionDetector(store, p, logger).Detect(ctx); err != nil {
 		t.Fatalf("detect: %v", err)
 	}

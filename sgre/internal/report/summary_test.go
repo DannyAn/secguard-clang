@@ -197,3 +197,39 @@ func TestBuildScanSummary_IncompleteWarning(t *testing.T) {
 		t.Fatalf("complete scan must not render the incomplete warning:\n%s", complete)
 	}
 }
+
+func TestBuildPlanSummary_FiltersAndCandidates(t *testing.T) {
+	data := PlanSummaryData{
+		VulnType:   "null-deref",
+		CWE:        "CWE-476",
+		SeedCount:  3,
+		FinalCount: 1,
+		Filters:    []PlanFilterStat{{Name: "NullGuardFilter", InputCount: 3, OutputCount: 1}},
+		Candidates: []PlanCandidateEntry{{Function: "f", File: "/src/a.c", Line: 7, Variable: "p", Suspicion: "high"}},
+	}
+	out := BuildPlanSummary(data)
+	for _, want := range []string{
+		"## SecGuard Plan Summary",
+		"| Vulnerability Type | null-deref |",
+		"| CWE | CWE-476 |",
+		"| Seed Count | 3 |",
+		"| Final Count | 1 |",
+		"### Filter Chain",
+		"| NullGuardFilter | 3 | 1 |",
+		"| 1 | f | /src/a.c:7 | p | high |",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected output to contain %q", want)
+		}
+	}
+}
+
+func TestBuildPlanSummary_NoCandidates(t *testing.T) {
+	out := BuildPlanSummary(PlanSummaryData{VulnType: "null-deref", CWE: "CWE-476"})
+	if !strings.Contains(out, "No candidates after convergence.") {
+		t.Fatalf("expected empty-candidate notice, got:\n%s", out)
+	}
+	if strings.Contains(out, "### Filter Chain") {
+		t.Fatal("empty filter list should omit the filter chain section")
+	}
+}

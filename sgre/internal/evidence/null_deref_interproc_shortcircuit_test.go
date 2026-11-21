@@ -79,10 +79,18 @@ func TestInterproceduralShortCircuitGuardedParam(t *testing.T) {
 		t.Fatalf("index: %v", err)
 	}
 
-	NewNullSourceDetector(store, p, logger).Detect(ctx)
-	NewDereferenceDetector(store, p, logger).Detect(ctx)
-	NewNullGuardDetector(store, p, logger).Detect(ctx)
-	NewInterproceduralDetector(store, p, logger).Detect(ctx)
+	if _, err := NewNullSourceDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewDereferenceDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewNullGuardDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewInterproceduralDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "DEREFERENCE")
 	if err != nil {

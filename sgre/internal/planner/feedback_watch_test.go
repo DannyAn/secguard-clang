@@ -60,8 +60,12 @@ func TestFeedbackWatchCapabilityMatrix(t *testing.T) {
 		t.Fatalf("walk fixtures: %v", err)
 	}
 
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	for _, d := range []evidence.Detector{
 		evidence.NewNullSourceDetector(store, p, logger),
 		evidence.NewDereferenceDetector(store, p, logger),

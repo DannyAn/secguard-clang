@@ -36,8 +36,12 @@ func planHrpSrc(t *testing.T, sources map[string]string) *PlanResult {
 			t.Fatalf("index %s: %v", name, err)
 		}
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	evidence.RunAllDetectors(ctx, store, p, logger)
 
 	pl := NewPlanner(store, p, logger)

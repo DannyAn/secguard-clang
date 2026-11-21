@@ -31,7 +31,9 @@ func planHardcodedSecret(t *testing.T, fixture string) map[string]EvidenceItem {
 	if _, err := idx.Index(ctx, filepath.Join("..", "..", "testdata", fixture)); err != nil {
 		t.Fatalf("index %s: %v", fixture, err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	if _, err := evidence.NewHardcodedSecretDetector(store, p, logger).Detect(ctx); err != nil {
 		t.Fatalf("detect %s: %v", fixture, err)
 	}

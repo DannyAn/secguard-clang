@@ -31,8 +31,12 @@ func TestInlineSuppression_DropsCandidate(t *testing.T) {
 	if _, err := idx.Index(ctx, filepath.Join("..", "..", "testdata", "tc176_suppression.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	if _, err := evidence.NewDereferenceDetector(store, p, logger).Detect(ctx); err != nil {
 		t.Fatalf("detect deref: %v", err)
 	}

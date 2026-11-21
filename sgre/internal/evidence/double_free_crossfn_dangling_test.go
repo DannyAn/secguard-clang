@@ -36,8 +36,12 @@ func runDoubleFreeDetectorWithAlias(t *testing.T, src string) []*db.SecurityEven
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 
 	ag, err := graph.BuildInterproceduralAlias(ctx, store, p)
 	if err != nil {
@@ -45,7 +49,9 @@ func runDoubleFreeDetectorWithAlias(t *testing.T, src string) []*db.SecurityEven
 	}
 	ctx = graph.WithAliasGraph(ctx, ag)
 
-	NewDoubleFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := NewDoubleFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 	events, err := store.ListEventsByType(ctx, "DOUBLE_FREE")
 	if err != nil {
 		t.Fatalf("list events: %v", err)

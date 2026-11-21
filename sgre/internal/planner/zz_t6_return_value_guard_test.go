@@ -27,8 +27,12 @@ func planNDFixture(t *testing.T, fixture string) *PlanResult {
 	if _, err := idx.Index(ctx, filepath.Join("..", "..", "testdata", fixture)); err != nil {
 		t.Fatalf("index %s: %v", fixture, err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	evidence.RunAllDetectors(ctx, store, p, logger)
 
 	pl := NewPlanner(store, p, logger)

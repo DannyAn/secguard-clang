@@ -79,7 +79,9 @@ void real_uaf(node_t *p)
 
 void real_uaf_same_line(node_t *p) { free(p); p->v = 3; }
 `, "use-after-free", func(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) {
-		evidence.NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+		if _, err := evidence.NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+			t.Fatalf("detect: %v", err)
+		}
 	})
 	cond := candidateOf(res, "uaf_after_cond_free")
 	if cond == nil {
@@ -114,7 +116,9 @@ void real_uninit(void)
     sink(y);
 }
 `, "uninit", func(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) {
-		evidence.NewUninitVariableDetector(store, p, logger).Detect(ctx)
+		if _, err := evidence.NewUninitVariableDetector(store, p, logger).Detect(ctx); err != nil {
+			t.Fatalf("detect: %v", err)
+		}
 	})
 	cond := candidateOf(res, "uninit_after_cond_init")
 	if cond == nil {
@@ -148,7 +152,9 @@ void real_df(char *p)
 
 void real_df_same_line(char *p) { free(p); free(p); }
 `, "double-free", func(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) {
-		evidence.NewDoubleFreeDetector(store, p, logger).Detect(ctx)
+		if _, err := evidence.NewDoubleFreeDetector(store, p, logger).Detect(ctx); err != nil {
+			t.Fatalf("detect: %v", err)
+		}
 	})
 	cond := candidateOf(res, "df_after_cond_free")
 	if cond == nil {

@@ -54,7 +54,9 @@ char *g_api_key = "xJ9kL2mN8pQ4rS6tU8vW0yA3bC5dE7fG";
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	if _, err := evidence.NewHardcodedSecretDetector(store, p, logger).Detect(ctx); err != nil {
 		t.Fatalf("detect: %v", err)
 	}

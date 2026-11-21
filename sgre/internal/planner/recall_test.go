@@ -99,14 +99,30 @@ func TestRecall_NoFalseNegatives(t *testing.T) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewNullSourceDetector(store, p, logger).Detect(ctx)
-	evidence.NewDereferenceDetector(store, p, logger).Detect(ctx)
-	evidence.NewNullGuardDetector(store, p, logger).Detect(ctx)
-	evidence.NewInterproceduralDetector(store, p, logger).Detect(ctx)
-	evidence.NewUninitVariableDetector(store, p, logger).Detect(ctx)
-	evidence.NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewNullSourceDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := evidence.NewDereferenceDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := evidence.NewNullGuardDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := evidence.NewInterproceduralDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := evidence.NewUninitVariableDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := evidence.NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	expected := map[string][]string{
 		"null-deref":     {"nd_basic", "nd_reassign_null", "nd_copy", "nd_call_return"},

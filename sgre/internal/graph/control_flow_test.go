@@ -502,3 +502,44 @@ void walk(node_t *pool) {
 		t.Error("NodeAtColumn with column 0 must fall back to NodeAt")
 	}
 }
+
+// TestBuildStmtCFG_DoWhileBackEdge covers buildDo: the body executes before
+// the condition, the condition has a true back edge and a false exit, and a
+// do-while's back edge exists from the body/condition to the header.
+func TestBuildStmtCFG_DoWhileBackEdge(t *testing.T) {
+	body := parseBody(t, `int f(int n) {
+    int i = 0;
+    do { i = i + 1; } while (i < n);
+    return i;
+}`)
+	cfg := BuildStmtCFG(body, 5)
+
+	hasBackEdge := false
+	for _, n := range cfg.Nodes {
+		for _, s := range n.Succs {
+			if s <= n.ID {
+				hasBackEdge = true
+			}
+		}
+	}
+	if !hasBackEdge {
+		t.Fatal("expected a back edge in the do-while CFG")
+	}
+
+	var doNode *StmtNode
+	for _, n := range cfg.Nodes {
+		if n.Kind == "stmt" && n.Stmt.Kind() == "do_statement" {
+			doNode = n
+			break
+		}
+	}
+	if doNode == nil {
+		t.Fatal("no node carries the do_statement")
+	}
+	if len(doNode.TrueSuccs) == 0 || len(doNode.FalseSuccs) == 0 {
+		t.Fatalf("do condition must have true and false successors, got true=%v false=%v", doNode.TrueSuccs, doNode.FalseSuccs)
+	}
+	if doNode.TrueSuccs[0] == doNode.FalseSuccs[0] {
+		t.Fatal("do condition true and false successors must differ")
+	}
+}
