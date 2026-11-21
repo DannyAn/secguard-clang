@@ -191,15 +191,15 @@ func runFinalizeCmd(ctx context.Context, args []string) int {
 	case !sarifOK:
 		out["status"] = "failed"
 		out["error"] = "result.sarif was not produced: the scan's verdict data is incomplete or failed to reach the report layer (see incomplete_types / audit_error)"
-		WriteJSON(out)
+		_ = WriteJSON(out)
 		return 1
 	case len(incompleteTypes) > 0:
 		out["status"] = "partial"
-		WriteJSON(out)
+		_ = WriteJSON(out)
 		return 0
 	default:
 		out["status"] = "ok"
-		WriteJSON(out)
+		_ = WriteJSON(out)
 		return 0
 	}
 }

@@ -75,8 +75,11 @@ func (d *RaceConditionDetector) Detect(ctx context.Context) (DetectResult, error
 	// externGlobals aggregates every non-static file-scope variable across the
 	// whole project (headers carry most `extern` declarations), so a thread fn
 	// accessing a global declared `extern` in a header is still seen.
-	externGlobals := d.collectExternGlobals(ctx)
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	externGlobals, err := d.collectExternGlobals(ctx)
+	if err != nil {
+		return result, err
+	}
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		calls := root.FindAll("call_expression")
 		globals := d.collectGlobalVars(root, file.ID, funcs)
 		for g := range externGlobals {
@@ -224,7 +227,7 @@ func (d *RaceConditionDetector) collectGlobalVars(root parser.Node, fileID int64
 // declarations). A shared_data_race detector that only sees one .c file cannot
 // otherwise notice a global declared `extern` in a header. Static file-scope
 // variables are excluded — their linkage is file-private.
-func (d *RaceConditionDetector) collectExternGlobals(ctx context.Context) map[string]bool {
+func (d *RaceConditionDetector) collectExternGlobals(ctx context.Context) (map[string]bool, error) {
 	globals := make(map[string]bool)
 	var funcs []*db.Function
 	if ri := graph.RepoIndexFromCtx(ctx); ri != nil {
@@ -233,14 +236,14 @@ func (d *RaceConditionDetector) collectExternGlobals(ctx context.Context) map[st
 		var err error
 		funcs, err = d.store.ListFunctions(ctx)
 		if err != nil {
-			return globals
+			return nil, err
 		}
 	}
 	byFile := make(map[int64][]*db.Function, 128)
 	for _, f := range funcs {
 		byFile[f.FileID] = append(byFile[f.FileID], f)
 	}
-	forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
+	if err := forEachIndexedFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, tree *parser.Tree) {
 		fileGlobals := d.collectGlobalVars(root, file.ID, byFile[file.ID])
 		// Re-filter to non-static: collectGlobalVars includes static, but a
 		// static variable must not leak into other files.
@@ -259,8 +262,10 @@ func (d *RaceConditionDetector) collectExternGlobals(ctx context.Context) map[st
 		for g := range fileGlobals {
 			globals[g] = true
 		}
-	})
-	return globals
+	}); err != nil {
+		return nil, err
+	}
+	return globals, nil
 }
 
 // isStaticDecl reports whether a declaration carries the `static` storage class.

@@ -102,7 +102,7 @@ func runDbCmd(ctx context.Context, args []string) int {
 		results = []map[string]interface{}{}
 	}
 
-	WriteJSON(map[string]interface{}{
+	_ = WriteJSON(map[string]interface{}{
 		"columns": columns,
 		"rows":    results,
 		"count":   len(results),

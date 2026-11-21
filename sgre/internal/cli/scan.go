@@ -1112,14 +1112,14 @@ func runStatusCmd(ctx context.Context, args []string) int {
 	// Limits are a property of the installed engine, not of a scan, so they are
 	// answered without requiring an sgre.db.
 	if hasFlag(args, "show-limits") {
-		WriteJSON(scanLimits())
+		_ = WriteJSON(scanLimits())
 		return 0
 	}
 	var found bool
 	dbPath, found = resolveExistingDBPath(dbExplicit, dbPath)
 
 	if !found {
-		WriteJSON(map[string]interface{}{
+		_ = WriteJSON(map[string]interface{}{
 			"indexed": false,
 			"state":   "empty",
 			"message": "No sgre.db found. Run 'secguard scan <path>' to create an index.",
@@ -1166,7 +1166,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("failed to claim settlement range: %v", cerr))
 			return 1
 		}
-		WriteJSON(claim)
+		_ = WriteJSON(claim)
 		return 0
 	}
 
@@ -1197,7 +1197,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("failed to release claim: %v", rerr))
 			return 1
 		}
-		WriteJSON(map[string]interface{}{
+		_ = WriteJSON(map[string]interface{}{
 			"scan_id":    scanID,
 			"vuln_type":  claimType,
 			"range":      normalizeSettlementRange(claimRange),
@@ -1234,7 +1234,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 			totalsByScan[rep.ScanID] = totals
 		}
 		enrichReportProgress(&res, totalsByScan)
-		WriteJSON(res)
+		_ = WriteJSON(res)
 		return 0
 	}
 
@@ -1287,7 +1287,7 @@ func runStatusCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("failed to enrich per-type status: %v", err))
 			return 1
 		}
-		WriteJSON(enriched)
+		_ = WriteJSON(enriched)
 		return 0
 	}
 

@@ -168,7 +168,7 @@ func runIndexCmd(ctx context.Context, args []string) int {
 		status = "partial"
 		exitCode = 1
 	}
-	WriteJSON(map[string]interface{}{
+	_ = WriteJSON(map[string]interface{}{
 		"status":             status,
 		"files_indexed":      result.FilesIndexed,
 		"functions_indexed":  result.FunctionsIndexed,

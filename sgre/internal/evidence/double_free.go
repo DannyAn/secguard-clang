@@ -66,7 +66,10 @@ type globalDFEntry struct {
 func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	summaries, err := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	if err != nil {
+		return result, err
+	}
 
 	// Collect every function's free events for the cross-function aggregation
 	// pass at the end (a free in A of a variable that is a cross-function
@@ -74,7 +77,7 @@ func (d *DoubleFreeDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// see).
 	var allFrees []dfFreeWithFn
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		inits := root.FindAll("init_declarator")
 		assigns := root.FindAll("assignment_expression")
 		calls := root.FindAll("call_expression")

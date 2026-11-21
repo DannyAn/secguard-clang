@@ -52,7 +52,10 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 	// The summaries are the tree-wide ParamDirectFrees facts the other
 	// detectors (UAF / double-free / container-field-leak) already consume;
 	// memory_leak now reads them too instead of relying on the name heuristic.
-	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	summaries, err := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	if err != nil {
+		return result, err
+	}
 
 	// Global-container shallow-free analysis (issue #255): the deletion path
 	// releases an object owned by a global container but not the object's
