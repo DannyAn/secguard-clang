@@ -53,37 +53,7 @@ func (d *ArgumentTypeDetector) Detect(ctx context.Context) (DetectResult, error)
 		// locals are bucketed per function (by start line) and carry their line
 		// so same-named variables in disjoint scopes resolve to the nearest
 		// declaration, not a later out-of-scope shadow.
-		globals := map[string]string{}
-		locals := map[int][]scopedVarDecl{}
-
-		for _, decl := range root.FindAll("declaration") {
-			base, decls := varDeclParts(decl)
-			if base == "" {
-				continue
-			}
-			line := decl.StartLine()
-			owner := -1
-			var ownerFn *db.Function
-			for _, fn := range funcs {
-				if funcLineRange(fn, line) {
-					owner = fn.StartLine
-					ownerFn = fn
-					break
-				}
-			}
-			end := 0
-			if ownerFn != nil {
-				end = declScopeEnd(decl, ownerFn)
-			}
-			for _, v := range decls {
-				typ := base + starSuffix(v.stars)
-				if owner == -1 {
-					globals[v.name] = typ
-				} else {
-					locals[owner] = append(locals[owner], scopedVarDecl{name: v.name, typ: typ, line: line, end: end})
-				}
-			}
-		}
+		globals, locals := collectFileScope(root, funcs)
 
 		for _, call := range root.FindAll("call_expression") {
 			var f *db.Function

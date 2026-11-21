@@ -1677,20 +1677,11 @@ func copySourceKey(rhs parser.Node) string {
 	return ""
 }
 
-// loadDFGCopies resolves all stored DATA_FLOW edges into per-function, per-line
-// copy pairs. It is a best-effort read of the graph layer: on any error it
-// returns an empty map and the analysis continues on CFG + events alone.
-func (a *flowAnalyzer) loadDFGCopies(ctx context.Context, funcIDs []int64) map[int64]map[int][]copyPair {
-	result := make(map[int64]map[int][]copyPair)
-	edges, err := a.store.ListGraphEdgesByType(ctx, "DATA_FLOW")
-	if err != nil {
-		return result
-	}
-
-	// Resolve variable_ref node IDs to (function, name, line), but only for
-	// functions we actually analyze. One bulk query for every variable_ref node
-	// (rather than one query per function) avoids an N+1 query storm over a
-	// large codebase.
+// loadVarRefMaps resolves the variable_ref graph nodes for the analyzed
+// functions: node ID -> variable name, line, and owning function. One bulk
+// query per load pass (not one per function) keeps the three edge loaders from
+// each re-implementing the same N+1 avoidance.
+func (a *flowAnalyzer) loadVarRefMaps(ctx context.Context, funcIDs []int64) (map[int64]string, map[int64]int, map[int64]int64) {
 	want := make(map[int64]bool, len(funcIDs))
 	for _, fid := range funcIDs {
 		want[fid] = true
@@ -1700,7 +1691,7 @@ func (a *flowAnalyzer) loadDFGCopies(ctx context.Context, funcIDs []int64) map[i
 	funcByNode := make(map[int64]int64)
 	nodes, err := a.store.ListGraphNodesByEntityType(ctx, "variable_ref")
 	if err != nil {
-		return result
+		return nil, nil, nil
 	}
 	for _, n := range nodes {
 		if !want[n.EntityID] {
@@ -1717,6 +1708,22 @@ func (a *flowAnalyzer) loadDFGCopies(ctx context.Context, funcIDs []int64) map[i
 		lineByNode[n.ID] = props.Line
 		funcByNode[n.ID] = n.EntityID
 	}
+	return nameByNode, lineByNode, funcByNode
+}
+
+// loadDFGCopies resolves all stored DATA_FLOW edges into per-function, per-line
+// copy pairs. It is a best-effort read of the graph layer: on any error it
+// returns an empty map and the analysis continues on CFG + events alone.
+func (a *flowAnalyzer) loadDFGCopies(ctx context.Context, funcIDs []int64) map[int64]map[int][]copyPair {
+	result := make(map[int64]map[int][]copyPair)
+	edges, err := a.store.ListGraphEdgesByType(ctx, "DATA_FLOW")
+	if err != nil {
+		return result
+	}
+
+	// Resolve variable_ref node IDs to (function, name, line), but only for
+	// functions we actually analyze.
+	nameByNode, lineByNode, funcByNode := a.loadVarRefMaps(ctx, funcIDs)
 
 	for _, e := range edges {
 		var props struct {
@@ -1774,33 +1781,7 @@ func (a *flowAnalyzer) loadAliases(ctx context.Context, funcIDs []int64) map[int
 		return result
 	}
 
-	want := make(map[int64]bool, len(funcIDs))
-	for _, fid := range funcIDs {
-		want[fid] = true
-	}
-
-	nameByNode := make(map[int64]string)
-	lineByNode := make(map[int64]int)
-	funcByNode := make(map[int64]int64)
-	nodes, err := a.store.ListGraphNodesByEntityType(ctx, "variable_ref")
-	if err != nil {
-		return result
-	}
-	for _, n := range nodes {
-		if !want[n.EntityID] {
-			continue
-		}
-		var props struct {
-			Name string `json:"name"`
-			Line int    `json:"line"`
-		}
-		if json.Unmarshal([]byte(n.Properties), &props) != nil || props.Name == "" {
-			continue
-		}
-		nameByNode[n.ID] = props.Name
-		lineByNode[n.ID] = props.Line
-		funcByNode[n.ID] = n.EntityID
-	}
+	nameByNode, lineByNode, funcByNode := a.loadVarRefMaps(ctx, funcIDs)
 
 	for _, e := range edges {
 		// A field/element alias (q = p->f, q = p[i]) copies a FIELD value, not the
@@ -1896,32 +1877,7 @@ func (a *flowAnalyzer) loadFreeSites(ctx context.Context, funcIDs []int64) map[i
 		return result
 	}
 
-	want := make(map[int64]bool, len(funcIDs))
-	for _, fid := range funcIDs {
-		want[fid] = true
-	}
-	nameByNode := make(map[int64]string)
-	lineByNode := make(map[int64]int)
-	funcByNode := make(map[int64]int64)
-	nodes, err := a.store.ListGraphNodesByEntityType(ctx, "variable_ref")
-	if err != nil {
-		return result
-	}
-	for _, n := range nodes {
-		if !want[n.EntityID] {
-			continue
-		}
-		var props struct {
-			Name string `json:"name"`
-			Line int    `json:"line"`
-		}
-		if json.Unmarshal([]byte(n.Properties), &props) != nil || props.Name == "" {
-			continue
-		}
-		nameByNode[n.ID] = props.Name
-		lineByNode[n.ID] = props.Line
-		funcByNode[n.ID] = n.EntityID
-	}
+	nameByNode, lineByNode, funcByNode := a.loadVarRefMaps(ctx, funcIDs)
 
 	for _, e := range edges {
 		var props struct {

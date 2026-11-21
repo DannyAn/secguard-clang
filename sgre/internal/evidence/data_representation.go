@@ -68,36 +68,7 @@ func (d *DataRepresentationDetector) Detect(ctx context.Context) (DetectResult, 
 	interpret := buildComparatorInterpretation(ctx, d.store, d.parser)
 
 	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
-		globals := map[string]string{}
-		locals := map[int][]scopedVarDecl{}
-		for _, decl := range root.FindAll("declaration") {
-			base, decls := varDeclParts(decl)
-			if base == "" {
-				continue
-			}
-			line := decl.StartLine()
-			owner := -1
-			var ownerFn *db.Function
-			for _, fn := range funcs {
-				if funcLineRange(fn, line) {
-					owner = fn.StartLine
-					ownerFn = fn
-					break
-				}
-			}
-			end := 0
-			if ownerFn != nil {
-				end = declScopeEnd(decl, ownerFn)
-			}
-			for _, v := range decls {
-				typ := base + starSuffix(v.stars)
-				if owner == -1 {
-					globals[v.name] = typ
-				} else {
-					locals[owner] = append(locals[owner], scopedVarDecl{name: v.name, typ: typ, line: line, end: end})
-				}
-			}
-		}
+		globals, locals := collectFileScope(root, funcs)
 
 		for _, call := range root.FindAll("call_expression") {
 			api := calleeName(call)
