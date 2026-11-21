@@ -452,15 +452,21 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 		}
 		if !apikb.IsDeallocator(callName) {
 			// Arbitrarily-named release helper (issue #281 M1 residual): a callee
-			// whose body frees its FIRST parameter directly (`void
-			// table_teardown(T *t){ ...; free(t); }`) releases the argument even
+			// whose body frees a pointer parameter directly (`void
+			// table_teardown(T *t){ ...; free(t); }`) releases that argument even
 			// though the name carries no free/destroy spelling. ParamDirectFrees
-			// is the every-path direct-free fact; a field-only free
-			// (ParamFieldFrees) does NOT release the base pointer and stays a
-			// leak, matching the supplement's "helper releases only members" case.
-			if s, ok := summaries[callName]; ok && s.ParamDirectFrees[0] {
-				if args := getCallArgs(call); len(args) > 0 {
-					recordFree(freeArgKey(args[0]), call.StartLine(), callName)
+			// is the every-path direct-free fact keyed by parameter index, so a
+			// helper may release any argument position, not only the first
+			// (`void release(int n, T *t){ free(t); }` frees the second). A
+			// field-only free (ParamFieldFrees) does NOT release the base pointer
+			// and stays a leak, matching the supplement's "helper releases only
+			// members" case.
+			if s, ok := summaries[callName]; ok {
+				args := getCallArgs(call)
+				for argIdx, arg := range args {
+					if s.ParamDirectFrees[argIdx] {
+						recordFree(freeArgKey(arg), call.StartLine(), callName)
+					}
 				}
 			}
 			continue
