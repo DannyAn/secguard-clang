@@ -167,7 +167,9 @@ func (t *Tree) close() {
 func NewParser() *Parser {
 	lang := sitter.NewLanguage(tree_sitter_c.Language())
 	p := sitter.NewParser()
-	p.SetLanguage(lang)
+	if err := p.SetLanguage(lang); err != nil {
+		panic(fmt.Sprintf("parser: set language: %v", err))
+	}
 	return &Parser{
 		lang:     lang,
 		parser:   p,
@@ -287,13 +289,21 @@ func (p *Parser) ParseCached(source []byte, filename string) (*Tree, error) {
 	// process (7 graph builders + 8 detectors + 8 plan types) behind ONE
 	// parser, making the concurrency knobs decorative on a first scan.
 	ps := sitter.NewParser()
-	ps.SetLanguage(p.lang)
-	tree := ps.Parse(source, nil)
+	setLangErr := ps.SetLanguage(p.lang)
+	var tree *sitter.Tree
+	if setLangErr == nil {
+		tree = ps.Parse(source, nil)
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.inflight, filename)
 	defer close(e.done)
+	if setLangErr != nil {
+		ps.Close()
+		e.err = fmt.Errorf("parser: set language for %s: %w", filename, setLangErr)
+		return nil, e.err
+	}
 	if tree == nil {
 		ps.Close()
 		e.err = fmt.Errorf("parser: parse %s failed", filename)

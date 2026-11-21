@@ -4,13 +4,13 @@ import "fmt"
 
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "deadlock",
-		CWE:              "CWE-667",
-		SeedEventType:    "DEADLOCK",
-		EvidenceType:     "DEADLOCK",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "deadlock",
-		FilterFactories:    chainDeadlock(),
+		Name:              "deadlock",
+		CWE:               "CWE-667",
+		SeedEventType:     "DEADLOCK",
+		EvidenceType:      "DEADLOCK",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "deadlock",
+		FilterFactories:   chainDeadlock(),
 		BuildVerdictFacts: buildDeadlockVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{

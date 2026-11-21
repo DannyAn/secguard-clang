@@ -180,8 +180,11 @@ func (d *SignedCompareDetector) unsignedType(decl parser.Node, typedefs *typedef
 //	u <= 0           → u == 0 (legitimate)
 //
 // Mirrored forms (constant on the left) are handled symmetrically.
-func (d *SignedCompareDetector) unsignedVsNegative(b parser.Node, declsByName map[string][]scVarDecl) bool {
-	op := ""
+// classifyUnsignedCompare extracts the comparison operator and the
+// unsigned/negative-constant roles. Both the confirmed-tautology and the
+// dead-branch checks used to copy this operand walk; only their result table
+// differs.
+func classifyUnsignedCompare(b parser.Node, declsByName map[string][]scVarDecl) (op string, uLeft, negative, ok bool) {
 	for _, child := range b.Children() {
 		switch child.Kind() {
 		case "<", "<=", ">", ">=":
@@ -189,28 +192,33 @@ func (d *SignedCompareDetector) unsignedVsNegative(b parser.Node, declsByName ma
 		}
 	}
 	if op == "" {
-		return false
+		return "", false, false, false
 	}
 	named := b.NamedChildren()
 	if len(named) < 2 {
-		return false
+		return "", false, false, false
 	}
 	left, right := named[0], named[len(named)-1]
 	line := b.StartLine()
+	if decls, found := declsByName[left.Text()]; found && isUnsignedAtLine(decls, line) {
+		if isConst, neg := classifyConst(right.Text()); isConst {
+			return op, true, neg, true
+		}
+	}
+	if decls, found := declsByName[right.Text()]; found && isUnsignedAtLine(decls, line) {
+		if isConst, neg := classifyConst(left.Text()); isConst {
+			return op, false, neg, true
+		}
+	}
+	return "", false, false, false
+}
 
-	// u op const
-	if decls, ok := declsByName[left.Text()]; ok && isUnsignedAtLine(decls, line) {
-		if ok, negative := classifyConst(right.Text()); ok {
-			return deadUnsignedCompare(op, true, negative)
-		}
+func (d *SignedCompareDetector) unsignedVsNegative(b parser.Node, declsByName map[string][]scVarDecl) bool {
+	op, uLeft, negative, ok := classifyUnsignedCompare(b, declsByName)
+	if !ok {
+		return false
 	}
-	// const op u
-	if decls, ok := declsByName[right.Text()]; ok && isUnsignedAtLine(decls, line) {
-		if ok, negative := classifyConst(left.Text()); ok {
-			return deadUnsignedCompare(op, false, negative)
-		}
-	}
-	return false
+	return deadUnsignedCompare(op, uLeft, negative)
 }
 
 // classifyConst reports whether text is a zero or negative integer literal.
@@ -252,34 +260,11 @@ func deadUnsignedCompare(op string, uLeft, negative bool) bool {
 // always-true tautologies (`u >= 0`, `0 <= u`) which can mask a missing
 // bounds check and remain confirmed.
 func isDeadBranchTautology(b parser.Node, declsByName map[string][]scVarDecl) bool {
-	op := ""
-	for _, child := range b.Children() {
-		switch child.Kind() {
-		case "<", "<=", ">", ">=":
-			op = child.Kind()
-		}
-	}
-	if op == "" {
+	op, uLeft, negative, ok := classifyUnsignedCompare(b, declsByName)
+	if !ok {
 		return false
 	}
-	named := b.NamedChildren()
-	if len(named) < 2 {
-		return false
-	}
-	left, right := named[0], named[len(named)-1]
-	line := b.StartLine()
-
-	if decls, ok := declsByName[left.Text()]; ok && isUnsignedAtLine(decls, line) {
-		if ok, negative := classifyConst(right.Text()); ok {
-			return isAlwaysFalse(op, true, negative)
-		}
-	}
-	if decls, ok := declsByName[right.Text()]; ok && isUnsignedAtLine(decls, line) {
-		if ok, negative := classifyConst(left.Text()); ok {
-			return isAlwaysFalse(op, false, negative)
-		}
-	}
-	return false
+	return isAlwaysFalse(op, uLeft, negative)
 }
 
 func isAlwaysFalse(op string, uLeft, negative bool) bool {

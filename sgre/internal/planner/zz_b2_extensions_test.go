@@ -140,7 +140,9 @@ func TestDefiniteValueAt_Engine(t *testing.T) {
 	}
 	var cats []string
 	for _, e := range events {
-		var pr struct{ Category string `json:"category"` }
+		var pr struct {
+			Category string `json:"category"`
+		}
 		_ = json.Unmarshal([]byte(e.Properties), &pr)
 		cats = append(cats, pr.Category)
 	}

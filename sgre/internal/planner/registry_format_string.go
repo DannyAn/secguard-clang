@@ -4,16 +4,16 @@ import "fmt"
 
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
-		Name:              "format-string",
-		CWE:               "CWE-134",
-		SeedEventType:     "FORMAT_STRING",
-		EvidenceType:      "FORMAT_STRING_VULN",
-		DefaultSuspicion:  "suspected",
-		FilterChain:       "format-string",
-		FilterFactories:   chainFormatString(),
+		Name:             "format-string",
+		CWE:              "CWE-134",
+		SeedEventType:    "FORMAT_STRING",
+		EvidenceType:     "FORMAT_STRING_VULN",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "format-string",
+		FilterFactories:  chainFormatString(),
 		// The taint-source filter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,
-		BuildVerdictFacts: buildFormatStringVerdictFacts,
+		BuildVerdictFacts:  buildFormatStringVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			frags := []EvidenceFragment{
 				{Type: "format_string", Role: "sink", Detail: fmt.Sprintf("printf-family called with non-literal format in %s at line %d", c.FunctionName, c.Line)},

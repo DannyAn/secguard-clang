@@ -199,12 +199,6 @@ func rhsIdentifier(rhs parser.Node) string {
 	return ""
 }
 
-// firstArgIdentifier returns the first argument when it is a bare identifier,
-// else "".
-func firstArgIdentifier(call parser.Node) string {
-	return argIdentifierAt(call, 0)
-}
-
 // argIdentifierAt returns the argument at position index when it is a bare
 // identifier, else "".
 func argIdentifierAt(call parser.Node, index int) string {

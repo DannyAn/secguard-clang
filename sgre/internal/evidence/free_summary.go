@@ -1075,8 +1075,3 @@ func extractVarFromDeclarator(node parser.Node) string {
 	}
 	return ""
 }
-
-func (m summaryMap) hasSummary(name string) bool {
-	_, ok := m[name]
-	return ok
-}

@@ -74,8 +74,7 @@ func (b *CallGraphBuilder) Build(ctx context.Context) (*BuildResult, error) {
 	// "unreachable" (a systematic false negative across every vuln type).
 	addrRefs := make(map[string]bool)
 
-	var err error
-	err = forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
+	err := forEachFile(ctx, b.store, b.parser, b.logger, func(file *db.File, root parser.Node, fileFuncs []*db.Function) {
 		callNodes := root.FindAll("call_expression")
 
 		for _, f := range fileFuncs {

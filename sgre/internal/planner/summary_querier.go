@@ -114,7 +114,7 @@ func (q *summaryQuerier) nullOf(ctx context.Context, funcName string) graph.Tri 
 		}
 		sawReturn = true
 		expr := children[0]
-		if isNullLiteralNode(expr) {
+		if parser.IsNullLiteral(expr) {
 			return graph.TriYes
 		}
 		if expr.Kind() == "call_expression" {

@@ -4,13 +4,13 @@ import "fmt"
 
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
-		Name:             "race-condition",
-		CWE:              "CWE-362",
-		SeedEventType:    "RACE_CONDITION",
-		EvidenceType:     "RACE_CONDITION",
-		DefaultSuspicion: "suspected",
-		FilterChain:      "race-condition",
-		FilterFactories:    chainRaceCondition(),
+		Name:              "race-condition",
+		CWE:               "CWE-362",
+		SeedEventType:     "RACE_CONDITION",
+		EvidenceType:      "RACE_CONDITION",
+		DefaultSuspicion:  "suspected",
+		FilterChain:       "race-condition",
+		FilterFactories:   chainRaceCondition(),
 		BuildVerdictFacts: buildRaceConditionVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {
 			if c.Category == "shared_data_race" {

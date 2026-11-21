@@ -10,7 +10,7 @@ func init() {
 		EvidenceType:      "HARDCODED_SECRET",
 		DefaultSuspicion:  "suspected",
 		FilterChain:       "hardcoded-secret",
-		FilterFactories:    chainHardcodedSecret(),
+		FilterFactories:   chainHardcodedSecret(),
 		BuildVerdictFacts: buildHardcodedSecretVerdictFacts,
 		// A literal whose VALUE is secret-shaped (a known token prefix, high
 		// Shannon entropy, URL-embedded credentials) is proven, so the

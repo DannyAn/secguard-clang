@@ -2,7 +2,6 @@ package evidence
 
 import (
 	"context"
-	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/parser"
@@ -83,60 +82,5 @@ func returnNullChecksParam(ret parser.Node, param string) bool {
 	if len(children) == 0 {
 		return false
 	}
-	return exprNullChecksParam(children[0], param)
-}
-
-// exprNullChecksParam recognizes `param == NULL` / `NULL == param` / `!param`
-// anywhere inside expr, recursing through parenthesized / cast / conditional /
-// binary-|| containers. A field access (`param->f`) is structurally distinct
-// from an identifier and so never matches, which is what excludes
-// `param->content == NULL` from counting as a null-check of param.
-func exprNullChecksParam(expr parser.Node, param string) bool {
-	if expr.Kind() == "binary_expression" && binaryOperator(expr) == "==" {
-		var hasParam, hasNull bool
-		for _, op := range expr.NamedChildren() {
-			if op.Kind() == "identifier" && op.Text() == param {
-				hasParam = true
-			}
-			if isNullOperand(op) {
-				hasNull = true
-			}
-		}
-		return hasParam && hasNull
-	}
-	if expr.Kind() == "unary_expression" && strings.HasPrefix(strings.TrimSpace(expr.Text()), "!") {
-		for _, op := range expr.NamedChildren() {
-			if op.Kind() == "identifier" && op.Text() == param {
-				return true
-			}
-		}
-		return false
-	}
-	for _, c := range expr.NamedChildren() {
-		if exprNullChecksParam(c, param) {
-			return true
-		}
-	}
-	return false
-}
-
-// isNullOperand reports whether an operand of a `==` comparison is a null
-// pointer constant (NULL / nullptr / 0 / ((void*)0)). tree-sitter-c parses
-// `NULL` as a `null` literal node, distinct from a plain identifier.
-func isNullOperand(op parser.Node) bool {
-	switch op.Kind() {
-	case "null":
-		return true
-	case "identifier":
-		return op.Text() == "nullptr"
-	case "number_literal":
-		return op.Text() == "0"
-	case "parenthesized_expression", "cast_expression":
-		for _, c := range op.NamedChildren() {
-			if isNullOperand(c) {
-				return true
-			}
-		}
-	}
-	return false
+	return parser.ExprNullChecksParam(children[0], param)
 }

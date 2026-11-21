@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"os"
-	"path/filepath"
-
 	"github.com/DannyAn/secguard-clang/internal/db"
+	"github.com/DannyAn/secguard-clang/internal/git"
 )
 
 // scanScope reports whether a scan is a COMPLETE-PROGRAM scan (the tree defines
@@ -26,7 +24,7 @@ func scanScope(targetPath string, funcs []*db.Function) map[string]interface{} {
 			break
 		}
 	}
-	worktree := enclosingWorktree(targetPath)
+	worktree := git.EnclosingWorktree(targetPath)
 	scope := map[string]interface{}{
 		"has_entry_point":    hasEntry,
 		"enclosing_worktree": worktree,
@@ -47,29 +45,6 @@ func scanScope(targetPath string, funcs []*db.Function) map[string]interface{} {
 			"pre-dismissed by default (boundary_auto_dismiss=\"external\"), and \"off\" restores the recall-maximal behaviour."
 	}
 	return scope
-}
-
-// enclosingWorktree walks up from targetPath and returns the first ancestor that
-// carries a `.git` entry (a directory, or a file for worktrees/submodules). It
-// returns "" when the target is not inside a git worktree.
-func enclosingWorktree(targetPath string) string {
-	dir, err := filepath.Abs(targetPath)
-	if err != nil {
-		return ""
-	}
-	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
-		dir = filepath.Dir(dir)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
 }
 
 // scopeMode / scopeWorktree read one field of the scan-scope map without

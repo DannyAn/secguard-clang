@@ -49,6 +49,45 @@ func IsNullOperand(op Node) bool {
 	return false
 }
 
+// IsNullLiteral reports whether n is an explicit C null pointer constant:
+// NULL, nullptr, a bare 0, or a parenthesized/pointer-cast form of one. A bare
+// 0 is a null pointer constant in C; a non-pointer scalar assigned 0 is gated
+// separately by the caller's type check.
+func IsNullLiteral(n Node) bool {
+	switch n.Kind() {
+	case "parenthesized_expression":
+		children := n.NamedChildren()
+		if len(children) == 0 {
+			return false
+		}
+		return IsNullLiteral(children[0])
+	case "cast_expression":
+		var operand Node
+		isPointerCast := false
+		for _, child := range n.NamedChildren() {
+			if child.Kind() == "type_descriptor" {
+				if strings.Contains(child.Text(), "*") {
+					isPointerCast = true
+				}
+				continue
+			}
+			operand = child
+		}
+		if !isPointerCast || operand.Kind() == "" {
+			return false
+		}
+		return IsNullLiteral(operand)
+	case "identifier":
+		t := strings.TrimSpace(n.Text())
+		return t == "NULL" || t == "nullptr"
+	case "null":
+		return true
+	case "number_literal":
+		return strings.TrimSpace(n.Text()) == "0"
+	}
+	return false
+}
+
 // LvaluePath returns s when it is a plain C lvalue path — an identifier
 // optionally followed by member (`->`, `.`) and subscript steps — and "" for
 // anything else (a boolean combination, a call, a literal, a dereference). The

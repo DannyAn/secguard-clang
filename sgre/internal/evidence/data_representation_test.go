@@ -12,7 +12,9 @@ import (
 
 func TestDataRepresentationDetector(t *testing.T) {
 	store := runOneDetector(t, "tc120_data_representation.c",
-		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDataRepresentationDetector(s, p, l) })
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector {
+			return NewDataRepresentationDetector(s, p, l)
+		})
 	if got := eventCount(t, store, "DATA_REPRESENTATION_MISMATCH"); got != 1 {
 		t.Errorf("expected 1 DATA_REPRESENTATION_MISMATCH event (char buffer + pointer comparator), got %d", got)
 	}
@@ -23,7 +25,9 @@ func TestDataRepresentationDetector(t *testing.T) {
 // type (expected) and the comparator's cast target (actual).
 func TestDataRepresentationDetector_Properties(t *testing.T) {
 	store := runOneDetector(t, "tc120_data_representation.c",
-		func(s db.Store, p *parser.Parser, l *log.Logger) Detector { return NewDataRepresentationDetector(s, p, l) })
+		func(s db.Store, p *parser.Parser, l *log.Logger) Detector {
+			return NewDataRepresentationDetector(s, p, l)
+		})
 	events, err := store.ListEventsByType(context.Background(), "DATA_REPRESENTATION_MISMATCH")
 	if err != nil {
 		t.Fatalf("list DATA_REPRESENTATION_MISMATCH events: %v", err)

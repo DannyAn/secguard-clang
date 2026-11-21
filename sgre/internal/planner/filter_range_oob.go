@@ -53,26 +53,11 @@ func (f *RangeOOBFilter) Apply(ctx context.Context, candidates []Candidate) ([]C
 		return candidates, nil, nil
 	}
 
-	fnByID, fileByID, err := loadFuncFiles(ctx, f.store, candidateFuncIDs(byFunc))
+	flows, cleanup, err := buildRangeFlowsForCandidates(ctx, f.store, f.parser, f.cfgCache, byFunc)
 	if err != nil {
 		return nil, nil, err
 	}
-	cache := newFileParseCache(f.parser)
-	defer cache.Close()
-	flows := make(map[int64]*rangeFlow, len(byFunc))
-	for fid := range byFunc {
-		fn := fnByID[fid]
-		if fn == nil {
-			continue
-		}
-		file := fileByID[fn.FileID]
-		if file == nil {
-			continue
-		}
-		body, _ := cache.get(file, fn)
-		flows[fid] = analyzeRangesWithCalls(ctx, f.cfgCache, cache.treeFor(file), fn, body, nil)
-	}
-	defer releaseRangeFlows(flows)
+	defer cleanup()
 
 	kept := make([]Candidate, 0, len(candidates))
 	var dropped []Dismissed

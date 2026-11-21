@@ -153,19 +153,27 @@ func traceSnprintfCRLF(root parser.Node, f *db.Function, sinkCallName string, si
 	return ""
 }
 
+// firstFormatTaintArg returns the first non-literal format/sink argument at or
+// after start, preferring a bare identifier and otherwise the trimmed
+// expression. CRLF, log and other format-sink detectors share this walk.
+func firstFormatTaintArg(args []string, start int) string {
+	for i := start; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if isStringLiteral(arg) {
+			continue
+		}
+		if v := bareIdentString(arg); v != "" {
+			return v
+		}
+		return strings.TrimSpace(arg)
+	}
+	return ""
+}
+
 func crlfTaintVariable(callName string, args []string) string {
 	switch callName {
 	case "fprintf", "snprintf":
-		for i := 2; i < len(args); i++ {
-			arg := strings.TrimSpace(args[i])
-			if isStringLiteral(arg) {
-				continue
-			}
-			if v := bareIdentString(arg); v != "" {
-				return v
-			}
-			return strings.TrimSpace(arg)
-		}
+		return firstFormatTaintArg(args, 2)
 	case "fputs":
 		if len(args) >= 1 {
 			arg := strings.TrimSpace(args[0])

@@ -22,13 +22,6 @@ func userContracts() map[string]config.Contract {
 	return userContractsMap
 }
 
-// resetUserContractsForTest clears the cached contracts map so a test can re-load
-// a fresh config (test seam).
-func resetUserContractsForTest() {
-	userContractsOnce = sync.Once{}
-	userContractsMap = nil
-}
-
 // appendContractHints emits the contract tokens for a candidate whose callee
 // (api@) has a user-declared contract. It is a pure function so it is testable
 // without touching the global config; buildHintParts feeds it the cached map.

@@ -13,6 +13,8 @@ package repofacts
 import (
 	"context"
 	"fmt"
+
+	"github.com/DannyAn/secguard-clang/internal/git"
 	"os"
 	"path/filepath"
 	"sort"
@@ -360,7 +362,7 @@ func worktreeHeaders(indexedPaths []string) []string {
 	}
 	roots := make(map[string]bool)
 	for _, p := range indexedPaths {
-		if r := enclosingWorktree(p); r != "" {
+		if r := git.EnclosingWorktree(p); r != "" {
 			roots[r] = true
 		}
 	}
@@ -394,29 +396,6 @@ func worktreeHeaders(indexedPaths []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// enclosingWorktree walks up from path and returns the first ancestor carrying
-// a `.git` entry (a directory, or a file for worktrees/submodules), or "" when
-// path is not inside a git worktree.
-func enclosingWorktree(path string) string {
-	dir, err := filepath.Abs(path)
-	if err != nil {
-		return ""
-	}
-	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
-		dir = filepath.Dir(dir)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
 }
 
 // worktreeExcludeDirs are the vendored / test / build directories pruned from

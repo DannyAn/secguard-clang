@@ -20,7 +20,6 @@ type edgeBatchWriter struct {
 	logger   *log.Logger
 	edges    []db.GraphEdge
 	maxBatch int
-	flushed  int
 	failed   int
 }
 
@@ -77,20 +76,8 @@ func (w *edgeBatchWriter) flush(ctx context.Context) int {
 		}
 	}
 	w.edges = w.edges[:0]
-	w.flushed += n
 	return n
 }
-
-// total returns the cumulative number of edges successfully written across all
-// flushes.
-func (w *edgeBatchWriter) total() int { return w.flushed }
-
-// failedTotal returns the cumulative number of edges that could NOT be written.
-// A graph with silently missing edges is worse than a failed build: lock-order /
-// shared-access gaps make the race/deadlock convergence filters drop real
-// candidates as "no shared access", so builders must surface this instead of
-// returning success.
-func (w *edgeBatchWriter) failedTotal() int { return w.failed }
 
 // flushErr flushes and returns an error when any edge could not be persisted,
 // so the owning builder's Build fails (and the pipeline's completion marker is

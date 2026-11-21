@@ -35,9 +35,7 @@ func extractFieldSpecs(ss parser.Node, macros map[string]int) []typeinfo.FieldSp
 		}
 		typ := fieldDeclTypeSpelling(fd)
 		isStruct, isUnion := fieldDeclIsAggregate(fd)
-		for _, spec := range fieldDeclarators(fd, typ, isStruct, isUnion, macros) {
-			out = append(out, spec)
-		}
+		out = append(out, fieldDeclarators(fd, typ, isStruct, isUnion, macros)...)
 	}
 	return out
 }

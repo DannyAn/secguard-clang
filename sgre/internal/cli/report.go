@@ -377,8 +377,8 @@ func runReportCmd(ctx context.Context, args []string) int {
 		out := make([]map[string]interface{}, 0, len(findings))
 		for _, f := range findings {
 			entry := map[string]interface{}{
-				"id":         f.ID,
-				"rule_id":    f.RuleID,
+				"id":      f.ID,
+				"rule_id": f.RuleID,
 				// vuln_type lets a Step 5.5 re-reviewer settle each row against the
 				// RIGHT machine-proof premise (and its per-type count) without
 				// reverse-mapping rule_id→type by hand — a multi-CWE type

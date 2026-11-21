@@ -29,6 +29,37 @@ type UninitVariableDetector struct {
 	iterMacros map[string][]int
 }
 
+// uninitScanInputs bundles the per-file facts and per-function context shared
+// by the three uninit sub-detectors. Named fields replace the former 20/14/13
+// positional parameters, where two same-typed AST slices could be swapped
+// without a compile error.
+type uninitScanInputs struct {
+	f                 *db.Function
+	file              *db.File
+	bound             map[string]bool
+	decls             []parser.Node
+	assigns           []parser.Node
+	calls             []parser.Node
+	exprStmts         []parser.Node
+	returns           []parser.Node
+	inits             []parser.Node
+	ifs               []parser.Node
+	whiles            []parser.Node
+	fors              []parser.Node
+	asms              []parser.Node
+	unarys            []parser.Node
+	ptrs              []parser.Node
+	fields            []parser.Node
+	subscripts        []parser.Node
+	bodies            map[int]parser.Node
+	summaries         summaryMap
+	macroWrites       map[string]macros.WriteSummary
+	objectMacroWrites map[string]map[string]bool
+	unionTypedefs     map[string]bool
+	result            *DetectResult
+	tree              *parser.Tree
+}
+
 func NewUninitVariableDetector(store db.Store, p *parser.Parser, logger *log.Logger) *UninitVariableDetector {
 	return &UninitVariableDetector{
 		store:      store,
@@ -81,14 +112,24 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 		bodies := functionBodyMap(funcDefs)
 		funcDefsByLine := functionDefinitionMap(funcDefs)
 
+		in := uninitScanInputs{
+			file: file, tree: tree,
+			decls: decls, assigns: assigns, calls: calls, exprStmts: exprStmts,
+			returns: returns, inits: inits, ifs: ifs, whiles: whiles, fors: fors, asms: asms,
+			unarys: unarys, ptrs: ptrs, fields: fields, subscripts: subscripts,
+			bodies: bodies, summaries: summaries,
+			macroWrites: macroWrites, objectMacroWrites: objectMacroWrites,
+			unionTypedefs: unionTypedefs, result: &result,
+		}
 		for _, f := range funcs {
+			in.f = f
 			// The scope oracle for the `(A) & x` disambiguation: the function's
 			// parameter names plus its local declarator names. A type name must
 			// never be in this set (see parser.FunctionBoundNames).
-			bound := parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
-			d.detectStackUninit(ctx, f, file, bound, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, asms, bodies, summaries, macroWrites, objectMacroWrites, &result, tree)
-			d.detectHeapUninit(ctx, f, file, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts, ifs, summaries, &result)
-			d.detectStructPartialUninit(ctx, f, file, bound, decls, assigns, calls, ifs, fields, summaries, macroWrites, unionTypedefs, &result)
+			in.bound = parser.FunctionBoundNames(funcDefsByLine[f.StartLine])
+			d.detectStackUninit(ctx, &in)
+			d.detectHeapUninit(ctx, &in)
+			d.detectStructPartialUninit(ctx, &in)
 		}
 	})
 	return result, err
@@ -243,7 +284,13 @@ func localVarDecls(decls []parser.Node) map[string][]varDecl {
 	return m
 }
 
-func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, exprStmts, returns, inits, ifs, whiles, fors, asms []parser.Node, bodies map[int]parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, objectMacroWrites map[string]map[string]bool, result *DetectResult, tree *parser.Tree) {
+func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, in *uninitScanInputs) {
+	f, file, bound := in.f, in.file, in.bound
+	decls, assigns, calls, exprStmts := in.decls, in.assigns, in.calls, in.exprStmts
+	returns, inits, ifs, whiles, fors, asms := in.returns, in.inits, in.ifs, in.whiles, in.fors, in.asms
+	bodies, summaries := in.bodies, in.summaries
+	macroWrites, objectMacroWrites := in.macroWrites, in.objectMacroWrites
+	result, tree := in.result, in.tree
 	uninitVars := make(map[string]bool)
 	assignSites := make(map[string][]int)
 	declsByName := make(map[string][]varDecl)
@@ -1201,11 +1248,9 @@ func firstIfInLoopBody(body parser.Node) *parser.Node {
 	if body.Kind() != "compound_statement" {
 		return nil
 	}
-	for _, child := range body.NamedChildren() {
-		if child.Kind() == "if_statement" {
-			return &child
-		}
-		return nil
+	children := body.NamedChildren()
+	if len(children) > 0 && children[0].Kind() == "if_statement" {
+		return &children[0]
 	}
 	return nil
 }
@@ -1403,7 +1448,11 @@ func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {
 	return false
 }
 
-func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, f *db.Function, file *db.File, decls, inits, assigns, calls, unarys, ptrs, fields, subscripts, ifs []parser.Node, summaries summaryMap, result *DetectResult) {
+func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, in *uninitScanInputs) {
+	f, file := in.f, in.file
+	decls, inits, assigns, calls := in.decls, in.inits, in.assigns, in.calls
+	unarys, ptrs, fields, subscripts, ifs := in.unarys, in.ptrs, in.fields, in.subscripts, in.ifs
+	summaries, result := in.summaries, in.result
 	// Scope-aware tracking (UN-04): mallocVars and every per-variable fact are
 	// keyed by varKey(name@declLine) so two `p` in nested blocks no longer
 	// collide — the previous bare-name maps let one scope's whole-init hide the
@@ -1934,7 +1983,11 @@ func unionTypedefNames(root parser.Node) map[string]bool {
 	return out
 }
 
-func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, f *db.Function, file *db.File, bound map[string]bool, decls, assigns, calls, ifs, fields []parser.Node, summaries summaryMap, macroWrites map[string]macros.WriteSummary, unionTypedefs map[string]bool, result *DetectResult) {
+func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, in *uninitScanInputs) {
+	f, file, bound := in.f, in.file, in.bound
+	decls, assigns, calls, ifs, fields := in.decls, in.assigns, in.calls, in.ifs, in.fields
+	summaries, macroWrites, unionTypedefs := in.summaries, in.macroWrites, in.unionTypedefs
+	result := in.result
 	// Scope-aware tracking (UN-04): structVars and every per-variable fact are
 	// keyed by varKey(name@declLine) so two `s` in nested blocks no longer collide.
 	structVars := make(map[string]int) // varKey -> decl line

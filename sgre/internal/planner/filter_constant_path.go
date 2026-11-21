@@ -279,7 +279,7 @@ func (p *pathProof) Close() {
 // by those writes (the caller's argument no longer reaches the sink), and only
 // an untouched parameter is judged by its in-tree call sites.
 func (p *pathProof) proveCandidate(c Candidate) (bool, string) {
-	sinkExpr, label := "", "argument"
+	var sinkExpr, label string
 	switch c.Category {
 	case "path_traversal":
 		sinkExpr, label = c.PathExpr, "path argument"

@@ -2275,19 +2275,3 @@ func findReturnVarLines(varName string, returns []parser.Node, f *db.Function) [
 	}
 	return lines
 }
-
-func getDestroyCounterpart(funcName string) string {
-	suffixes := []struct{ create, destroy string }{
-		{"_create", "_destroy"},
-		{"_new", "_free"},
-		{"_init", "_deinit"},
-		{"_acquire", "_release"},
-	}
-	for _, s := range suffixes {
-		if strings.HasSuffix(funcName, s.create) {
-			prefix := funcName[:len(funcName)-len(s.create)]
-			return prefix + s.destroy
-		}
-	}
-	return ""
-}

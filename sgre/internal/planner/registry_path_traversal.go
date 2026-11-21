@@ -8,17 +8,17 @@ import (
 
 func init() {
 	RegisterVulnType(&VulnTypeSpec{
-		Name:              "path-traversal",
-		CWE:               "CWE-22",
-		SeedEventType:     "PATH_TRAVERSAL",
-		EvidenceType:      "PATH_TRAVERSAL",
-		DefaultSuspicion:  "suspected",
-		FilterChain:       "path-traversal",
-		FilterFactories:   chainPathTraversal(),
+		Name:             "path-traversal",
+		CWE:              "CWE-22",
+		SeedEventType:    "PATH_TRAVERSAL",
+		EvidenceType:     "PATH_TRAVERSAL",
+		DefaultSuspicion: "suspected",
+		FilterChain:      "path-traversal",
+		FilterFactories:  chainPathTraversal(),
 		// The taint-source filter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,
-		Categories:        []string{"path_traversal", "world_writable_file", "world_writable_var"},
-		CategoryCWEs:      map[string]string{"world_writable_file": "CWE-732", "world_writable_var": "CWE-732"},
+		Categories:         []string{"path_traversal", "world_writable_file", "world_writable_var"},
+		CategoryCWEs:       map[string]string{"world_writable_file": "CWE-732", "world_writable_var": "CWE-732"},
 		// A chmod with a provable other-write mode on a non-temp literal path
 		// is a certain world-writable-file defect (CWE-732); a variable path or
 		// an fd is only suspected (umask filtering cannot be proven statically).

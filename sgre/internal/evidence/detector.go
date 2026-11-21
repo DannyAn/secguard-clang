@@ -48,83 +48,10 @@ type DomainAware interface {
 // A file that cannot be read or parsed is SKIPPED (its functions emit no events
 // for any detector). For a security tool that is a silent false-negative, so
 // each skip is logged as a warning rather than dropped without a trace.
-func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree)) error {
-	ri := graph.RepoIndexFromCtx(ctx)
-	var order []int64
-	var byFile func(int64) []*db.Function
-	var fileByID func(int64) *db.File
-	if ri != nil {
-		order = ri.FileOrder()
-		byFile = ri.FuncsByFile
-		fileByID = ri.FileByID
-	} else {
-		funcs, err := store.ListFunctions(ctx)
-		if err != nil {
-			return err
-		}
-		grouped := make(map[int64][]*db.Function, 128)
-		for _, f := range funcs {
-			if _, seen := grouped[f.FileID]; !seen {
-				order = append(order, f.FileID)
-			}
-			grouped[f.FileID] = append(grouped[f.FileID], f)
-		}
-		byFile = func(fid int64) []*db.Function { return grouped[fid] }
-		fileByID = func(fid int64) *db.File {
-			f, _ := store.GetFileByID(ctx, fid)
-			return f
-		}
-	}
-
-	for _, fid := range order {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		file := fileByID(fid)
-		if file == nil {
-			continue
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("evidence: read file failed, skipping", "file", file.Path, "error", err)
-			}
-			continue
-		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("evidence: parse file failed, skipping", "file", file.Path, "error", err)
-			}
-			continue
-		}
-		func() {
-			defer tree.Release()
-			fn(file, tree.RootNode(), byFile(fid), tree)
-		}()
-	}
-	return nil
-}
-
-// forEachIndexedFile invokes fn once per indexed file with the file and its
-// parsed root. Unlike forEachFile — which visits only files that contain at
-// least one indexed function — this visits EVERY indexed file, so a header that
-// holds only macros / extern declarations is still scanned (e.g. for macro
-// write-summaries a call site in another file depends on).
-func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, tree *parser.Tree)) error {
-	ri := graph.RepoIndexFromCtx(ctx)
-	var files []*db.File
-	if ri != nil {
-		files = ri.Files()
-	} else {
-		var err error
-		files, err = store.ListFiles(ctx)
-		if err != nil {
-			return err
-		}
-	}
+// forEachParsedFile runs fn for each file, reading and parsing it once and
+// releasing the tree immediately. It is the shared core of the three traversal
+// helpers below; each keeps only its own file-selection rule.
+func forEachParsedFile(ctx context.Context, p *parser.Parser, logger *log.Logger, files []*db.File, fn func(file *db.File, root parser.Node, tree *parser.Tree)) error {
 	for _, file := range files {
 		select {
 		case <-ctx.Done():
@@ -153,6 +80,68 @@ func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, l
 	return nil
 }
 
+func forEachFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree)) error {
+	ri := graph.RepoIndexFromCtx(ctx)
+	var order []int64
+	var byFile func(int64) []*db.Function
+	var fileByID func(int64) *db.File
+	if ri != nil {
+		order = ri.FileOrder()
+		byFile = ri.FuncsByFile
+		fileByID = ri.FileByID
+	} else {
+		funcs, err := store.ListFunctions(ctx)
+		if err != nil {
+			return err
+		}
+		grouped := make(map[int64][]*db.Function, 128)
+		for _, f := range funcs {
+			if _, seen := grouped[f.FileID]; !seen {
+				order = append(order, f.FileID)
+			}
+			grouped[f.FileID] = append(grouped[f.FileID], f)
+		}
+		byFile = func(fid int64) []*db.Function { return grouped[fid] }
+		fileByID = func(fid int64) *db.File {
+			f, _ := store.GetFileByID(ctx, fid)
+			return f
+		}
+	}
+
+	files := make([]*db.File, 0, len(order))
+	for _, fid := range order {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if file := fileByID(fid); file != nil {
+			files = append(files, file)
+		}
+	}
+	return forEachParsedFile(ctx, p, logger, files, func(file *db.File, root parser.Node, tree *parser.Tree) {
+		fn(file, root, byFile(file.ID), tree)
+	})
+}
+
+// forEachIndexedFile invokes fn once per indexed file with the file and its
+// parsed root. Unlike forEachFile — which visits only files that contain at
+// least one indexed function — this visits EVERY indexed file, so a header that
+// holds only macros / extern declarations is still scanned (e.g. for macro
+// write-summaries a call site in another file depends on).
+func forEachIndexedFile(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger, fn func(file *db.File, root parser.Node, tree *parser.Tree)) error {
+	ri := graph.RepoIndexFromCtx(ctx)
+	var files []*db.File
+	if ri != nil {
+		files = ri.Files()
+	} else {
+		var err error
+		files, err = store.ListFiles(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return forEachParsedFile(ctx, p, logger, files, fn)
+}
+
 // forEachFileIncludingEmpty is forEachFile that ALSO visits files containing no
 // indexed function (data-only .c files), passing an empty funcs slice. A
 // detector that scans file-scope declarations (hardcoded secrets) needs this so
@@ -179,32 +168,9 @@ func forEachFileIncludingEmpty(ctx context.Context, store db.Store, p *parser.Pa
 			return err
 		}
 	}
-	for _, file := range files {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		source, err := os.ReadFile(file.Path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("evidence: read file failed, skipping", "file", file.Path, "error", err)
-			}
-			continue
-		}
-		tree, err := p.ParseCached(source, file.Path)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("evidence: parse file failed, skipping", "file", file.Path, "error", err)
-			}
-			continue
-		}
-		func() {
-			defer tree.Release()
-			fn(file, tree.RootNode(), byFile(file.ID), tree)
-		}()
-	}
-	return nil
+	return forEachParsedFile(ctx, p, logger, files, func(file *db.File, root parser.Node, tree *parser.Tree) {
+		fn(file, root, byFile(file.ID), tree)
+	})
 }
 
 // funcLineRange reports whether a node's start line falls inside the function's

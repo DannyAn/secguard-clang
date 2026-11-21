@@ -4,7 +4,7 @@ import "testing"
 
 func TestAssignPartsInitDeclAttribute(t *testing.T) {
 	cases := []struct {
-		src    string
+		src     string
 		wantLHS string
 		wantRHS string
 	}{

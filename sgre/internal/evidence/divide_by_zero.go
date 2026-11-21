@@ -159,26 +159,6 @@ func (d *DivideByZeroDetector) Detect(ctx context.Context) (DetectResult, error)
 	return result, err
 }
 
-// divOrModDivisor returns the right operand of a `/` or `%` binary expression,
-// and whether the operator is one of those two.
-func divOrModDivisor(expr parser.Node) (string, bool) {
-	op := ""
-	for _, child := range expr.Children() {
-		switch child.Kind() {
-		case "/", "%":
-			op = child.Kind()
-		}
-	}
-	if op == "" {
-		return "", false
-	}
-	named := expr.NamedChildren()
-	if len(named) < 2 {
-		return "", false
-	}
-	return unwrapDivisorNode(named[len(named)-1]).Text(), true
-}
-
 // divOperands returns the dividend and divisor of a `/` or `%` binary
 // expression. It is the operand-pair form of divOrModDivisor, added so the
 // INT_MIN/-1 check can read the dividend without a second traversal.

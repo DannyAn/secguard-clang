@@ -116,7 +116,10 @@ func (d *ContractGapDetector) Detect(ctx context.Context) (DetectResult, error) 
 	}
 
 	// Cross-function contract evidence.
-	sibling := d.collectSiblingContracts(ctx)
+	sibling, err := d.collectSiblingContracts(ctx)
+	if err != nil {
+		return result, err
+	}
 
 	// Pass 2: emit when E-b (self) or E-a (sibling) evidence is present. The
 	// evidence is tiered by strength because the planner pre-dismisses the weak
@@ -270,12 +273,12 @@ func firstForeignGuard(guards []siblingGuard, fnName string) siblingGuard {
 // -> field name -> a function with that parameter type null-checks the field.
 // It is type-anchored, never name-guessed across unrelated structs, and keeps
 // the same-file and cross-file tiers separate.
-func (d *ContractGapDetector) collectSiblingContracts(ctx context.Context) siblingContracts {
+func (d *ContractGapDetector) collectSiblingContracts(ctx context.Context) (siblingContracts, error) {
 	out := siblingContracts{
 		sameFile:  map[int64]map[string]map[string][]siblingGuard{},
 		crossFile: map[string]map[string][]siblingGuard{},
 	}
-	_ = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	if err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		comparisons := root.FindAll("binary_expression")
 		assigns := root.FindAll("assignment_expression")
@@ -355,8 +358,10 @@ func (d *ContractGapDetector) collectSiblingContracts(ctx context.Context) sibli
 				}
 			}
 		}
-	})
-	return out
+	}); err != nil {
+		return siblingContracts{}, err
+	}
+	return out, nil
 }
 
 // fieldOrigin is the (parameter, field) a local was derived from.

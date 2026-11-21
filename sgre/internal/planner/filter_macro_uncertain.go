@@ -2,7 +2,6 @@ package planner
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 )
@@ -60,7 +59,7 @@ func (f *MacroUncertainFilter) Apply(ctx context.Context, candidates []Candidate
 		}
 		if c.SuspicionLevel != "confirmed" && c.SourceLine == 0 && c.MacroContext {
 			dropped = dismiss(dropped, c, f.Name(),
-				fmt.Sprintf("macro-context candidate has no concrete null source line"))
+				"macro-context candidate has no concrete null source line")
 			continue
 		}
 		kept = append(kept, c)
