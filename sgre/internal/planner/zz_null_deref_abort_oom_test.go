@@ -60,8 +60,12 @@ void use(void) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	evidence.RunAllDetectors(ctx, store, p, logger)
 
 	res, err := NewPlanner(store, p, logger).Plan(ctx, "null-deref")

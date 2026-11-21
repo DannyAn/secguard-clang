@@ -30,8 +30,12 @@ func setupDetector(t *testing.T, fixture string) (db.Store, *parser.Parser) {
 	if _, err := idx.Index(ctx, fixturePath(fixture)); err != nil {
 		t.Fatalf("index %s: %v", fixture, err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	return store, p
 }
 
@@ -306,9 +310,15 @@ func TestRaceCondition_ExternGlobal(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("race_extern")); err != nil {
 		t.Fatalf("index race_extern: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewRaceConditionDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewRaceConditionDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "RACE_CONDITION")
 	if err != nil {
@@ -597,12 +607,24 @@ func TestNullDeref_CrossFileOutputParam(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("outparam_cross_null")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewNullSourceDetector(store, p, logger).Detect(ctx)
-	NewDereferenceDetector(store, p, logger).Detect(ctx)
-	NewNullGuardDetector(store, p, logger).Detect(ctx)
-	NewInterproceduralDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewNullSourceDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewDereferenceDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewNullGuardDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewInterproceduralDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := planner.NewPlanner(store, p, logger)
 	res, err := pl.Plan(ctx, "null-deref")
@@ -636,9 +658,15 @@ func TestUninit_CrossFileDispatchOutputParam(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("outparam_cross")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUninitVariableDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUninitVariableDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "VALUE_USE")
 	if err != nil {

@@ -53,9 +53,15 @@ void caller(void) { log_wrapper("%s", "x"); }
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewFormatStringDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewFormatStringDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "format-string")

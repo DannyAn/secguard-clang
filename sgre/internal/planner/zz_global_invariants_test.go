@@ -49,9 +49,15 @@ int tp_local_zero(void) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "divide-by-zero")
@@ -100,9 +106,15 @@ int fp_backfill(void) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "divide-by-zero")
@@ -154,9 +166,15 @@ uint32_t fp_field_from_func(struct graph_info *graph, uint32_t offset) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "divide-by-zero")
@@ -202,9 +220,15 @@ uint32_t tp_global_zero_init(uint32_t index) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "divide-by-zero")
@@ -250,9 +274,15 @@ uint32_t fp_global_nonzero_init(uint32_t len) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "divide-by-zero")
@@ -308,9 +338,15 @@ uint32_t tp_mixed_assign(struct graph_info *g, uint32_t offset) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "divide-by-zero")
@@ -355,9 +391,15 @@ int tp_local_divisor(int x) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := evidence.NewDivideByZeroDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := NewPlanner(store, p, logger)
 	result, err := pl.Plan(ctx, "divide-by-zero")

@@ -49,9 +49,15 @@ int fp_different_field(struct Node *q) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewDoubleFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewDoubleFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "DOUBLE_FREE")
 	if err != nil {

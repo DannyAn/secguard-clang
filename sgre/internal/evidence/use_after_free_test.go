@@ -29,9 +29,15 @@ func TestUseAfterFree_FieldFreeScope(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc45_field_free_scope.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
 	if err != nil {
@@ -83,9 +89,15 @@ func TestUseAfterFree_ConditionalFieldFree(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc55_conditional_field_free.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
 	if err != nil {
@@ -143,9 +155,15 @@ int fp_different_field(struct Node *q) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
 	if err != nil {
@@ -202,9 +220,15 @@ int fp_different_slot(void) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
 	if err != nil {
@@ -255,9 +279,15 @@ int tp_same_line(void) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
 	if err != nil {
@@ -304,9 +334,15 @@ int tp_alias_chain(void) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
 	if err != nil {
@@ -342,9 +378,15 @@ func TestUseAfterFree_ReassignKillsUse(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc137_uaf_reassign_kill.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
 	if err != nil {
@@ -393,9 +435,15 @@ func TestUseAfterFree_ReturnPointerNotUse(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc181_uaf_return_pointer.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "USE_AFTER_FREE")
 	if err != nil {

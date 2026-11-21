@@ -32,9 +32,15 @@ func TestIntegerOverflow_ValueAnalysis(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc66_value_analysis_size.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewIntegerOverflowDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewIntegerOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "INTEGER_OVERFLOW")
 	if err != nil {

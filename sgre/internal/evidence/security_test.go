@@ -85,43 +85,69 @@ func runIndexAndDetect(t *testing.T, fixture string) db.Store {
 	}
 
 	nsDetector := NewNullSourceDetector(store, p, logger)
-	nsDetector.Detect(ctx)
+	if _, err := nsDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	derefDetector := NewDereferenceDetector(store, p, logger)
-	derefDetector.Detect(ctx)
+	if _, err := derefDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	guardDetector := NewNullGuardDetector(store, p, logger)
-	guardDetector.Detect(ctx)
+	if _, err := guardDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	memDetector := NewMemoryLeakDetector(store, p, logger)
-	memDetector.Detect(ctx)
+	if _, err := memDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	boDetector := NewBufferOverflowDetector(store, p, logger)
-	boDetector.Detect(ctx)
+	if _, err := boDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	injDetector := NewInjectionDetector(store, p, logger)
-	injDetector.Detect(ctx)
+	if _, err := injDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	resDetector := NewResourceLeakDetector(store, p, logger)
-	resDetector.Detect(ctx)
+	if _, err := resDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	uninitDetector := NewUninitVariableDetector(store, p, logger)
-	uninitDetector.Detect(ctx)
+	if _, err := uninitDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	intOverflowDetector := NewIntegerOverflowDetector(store, p, logger)
-	intOverflowDetector.Detect(ctx)
+	if _, err := intOverflowDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	raceDetector := NewRaceConditionDetector(store, p, logger)
-	raceDetector.Detect(ctx)
+	if _, err := raceDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	secretDetector := NewHardcodedSecretDetector(store, p, logger)
-	secretDetector.Detect(ctx)
+	if _, err := secretDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	deadlockDetector := NewDeadlockDetector(store, p, logger)
-	deadlockDetector.Detect(ctx)
+	if _, err := deadlockDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	cryptoDetector := NewCryptoMisuseDetector(store, p, logger)
-	cryptoDetector.Detect(ctx)
+	if _, err := cryptoDetector.Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	return store
 }

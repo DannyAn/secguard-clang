@@ -52,20 +52,42 @@ func TestIntegration_FullScanPipeline(t *testing.T) {
 	}
 
 	cgBuilder := graph.NewCallGraphBuilder(store, p, logger)
-	cgBuilder.Build(ctx)
+	if _, err := cgBuilder.Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 
 	dfBuilder := graph.NewDataFlowBuilder(store, p, logger)
-	dfBuilder.Build(ctx)
+	if _, err := dfBuilder.Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 
-	NewNullSourceDetector(store, p, logger).Detect(ctx)
-	NewDereferenceDetector(store, p, logger).Detect(ctx)
-	NewNullGuardDetector(store, p, logger).Detect(ctx)
-	NewInterproceduralDetector(store, p, logger).Detect(ctx)
-	NewMemoryLeakDetector(store, p, logger).Detect(ctx)
-	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
-	NewInjectionDetector(store, p, logger).Detect(ctx)
-	NewResourceLeakDetector(store, p, logger).Detect(ctx)
-	NewUninitVariableDetector(store, p, logger).Detect(ctx)
+	if _, err := NewNullSourceDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewDereferenceDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewNullGuardDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewInterproceduralDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewMemoryLeakDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewInjectionDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewResourceLeakDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewUninitVariableDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	expectedEvents := map[string]int{
 		"NULL_VALUE":       1,

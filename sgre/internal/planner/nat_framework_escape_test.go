@@ -96,9 +96,15 @@ int nat_malloc_unchecked(void) {
 	if _, err := idx.Index(ctx, path); err != nil {
 		t.Fatal(err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewOwnershipBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	for _, derr := range evidence.RunAllDetectors(ctx, store, p, logger) {
 		t.Logf("detector %s error: %v", derr.Detector, derr.Err)
 	}

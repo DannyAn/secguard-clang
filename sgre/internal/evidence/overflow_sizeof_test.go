@@ -26,9 +26,15 @@ func TestIntegerOverflow_SizeofProduct(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc64_int_overflow_sizeof.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewIntegerOverflowDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewIntegerOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "INTEGER_OVERFLOW")
 	if err != nil {
@@ -81,9 +87,15 @@ func TestBoundedCopyOverflow(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc65_bounded_copy_overflow.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
 	if err != nil {
@@ -132,9 +144,15 @@ func TestBoundedCopyVarSize(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc67_bounded_copy_var_size.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
 	if err != nil {
@@ -180,9 +198,15 @@ func TestBoundedCopyPlannerSeeding(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc65_bounded_copy_overflow.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := planner.NewPlanner(store, nil, logger)
 	res, err := pl.Plan(ctx, "buffer-overflow")
@@ -216,9 +240,15 @@ func TestSecureFunctionMisuse(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc68_secure_func_misuse.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
 	if err != nil {
@@ -297,9 +327,15 @@ func TestBoundedMemcpy(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc69_bounded_memcpy.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
 	if err != nil {
@@ -354,9 +390,15 @@ func TestScanfSecure(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc70_scanf_secure.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	NewBufferOverflowDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	events, err := store.ListEventsByType(ctx, "BUFFER_ACCESS")
 	if err != nil {

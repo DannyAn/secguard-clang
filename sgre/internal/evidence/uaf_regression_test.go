@@ -84,11 +84,21 @@ func TestUAF_LinkedListDelete_NoCandidates(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc_uaf_linked_list_delete.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	graph.NewAliasBuilder(store, p, logger).Build(ctx)
-	graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewAliasBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewOwnershipBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := planner.NewPlanner(store, p, logger)
 	res, err := pl.Plan(ctx, "use-after-free")
@@ -117,11 +127,21 @@ func TestUAF_DisjointBranches_NoConvergedCandidates(t *testing.T) {
 	if _, err := idx.Index(ctx, fixturePath("tc_uaf_disjoint_read.c")); err != nil {
 		t.Fatalf("index: %v", err)
 	}
-	graph.NewCallGraphBuilder(store, p, logger).Build(ctx)
-	graph.NewDataFlowBuilder(store, p, logger).Build(ctx)
-	graph.NewOwnershipBuilder(store, p, logger).Build(ctx)
-	NewDoubleFreeDetector(store, p, logger).Detect(ctx)
-	NewUseAfterFreeDetector(store, p, logger).Detect(ctx)
+	if _, err := graph.NewCallGraphBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewDataFlowBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := graph.NewOwnershipBuilder(store, p, logger).Build(ctx); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if _, err := NewDoubleFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if _, err := NewUseAfterFreeDetector(store, p, logger).Detect(ctx); err != nil {
+		t.Fatalf("detect: %v", err)
+	}
 
 	pl := planner.NewPlanner(store, p, logger)
 	for _, vt := range []string{"double-free", "use-after-free"} {
