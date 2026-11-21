@@ -68,7 +68,7 @@ func TestWithImmediateTx_AcquiresLockUpfront(t *testing.T) {
 	if _, err := htx.Exec("CREATE TABLE IF NOT EXISTS _lockprobe (id INTEGER)"); err != nil {
 		t.Fatal(err)
 	}
-	defer htx.Rollback()
+	defer func() { _ = htx.Rollback() }()
 
 	s := NewStore(sdb)
 	start := time.Now()

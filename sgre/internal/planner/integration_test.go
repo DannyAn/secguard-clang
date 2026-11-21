@@ -20,27 +20,37 @@ func TestEndToEnd_FullWorkflow(t *testing.T) {
 	loc1, _ := s.InsertLocation(ctx, &db.Location{FileID: fileID, Line: 2})
 	loc2, _ := s.InsertLocation(ctx, &db.Location{FileID: fileID, Line: 10})
 
-	s.InsertEvent(ctx, &db.SecurityEvent{
+	if _, err := s.InsertEvent(ctx, &db.SecurityEvent{
 		EventType: "NULL_VALUE", EntityID: getUser, LocationID: loc1,
 		Properties: `{"variable":"<return>","origin":"return"}`,
-	})
-	s.InsertEvent(ctx, &db.SecurityEvent{
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	if _, err := s.InsertEvent(ctx, &db.SecurityEvent{
 		EventType: "NULL_VALUE", EntityID: foo, LocationID: loc2,
 		Properties: `{"variable":"user","origin":"call_return"}`,
-	})
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
 
-	s.InsertEvent(ctx, &db.SecurityEvent{
+	if _, err := s.InsertEvent(ctx, &db.SecurityEvent{
 		EventType: "DEREFERENCE", EntityID: foo, LocationID: loc2,
 		Properties: `{"variable":"user","expression":"user->name"}`,
-	})
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
 
 	nodeGetUser, _ := s.GetOrCreateGraphNode(ctx, "function", getUser, "")
 	nodeFoo, _ := s.GetOrCreateGraphNode(ctx, "function", foo, "")
-	s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: nodeFoo, DstID: nodeGetUser, EdgeType: "CALL"})
+	if _, err := s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: nodeFoo, DstID: nodeGetUser, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	varSrc, _ := s.GetOrCreateGraphNode(ctx, "variable_ref", foo, `{"name":"user"}`)
 	varDst, _ := s.GetOrCreateGraphNode(ctx, "variable_ref", foo, `{"name":"user_deref"}`)
-	s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: varSrc, DstID: varDst, EdgeType: "DATA_FLOW"})
+	if _, err := s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: varSrc, DstID: varDst, EdgeType: "DATA_FLOW"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	p := NewPlanner(s, nil, nil)
 	result, err := p.Plan(ctx, "null-deref")
@@ -94,7 +104,9 @@ func TestEndToEnd_FullWorkflow(t *testing.T) {
 
 	data, _ := result.ToJSON()
 	var jsonResult map[string]interface{}
-	json.Unmarshal(data, &jsonResult)
+	if err := json.Unmarshal(data, &jsonResult); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	if jsonResult["vulnerability_type"] != "null-deref" {
 		t.Error("JSON output missing vulnerability_type")
 	}

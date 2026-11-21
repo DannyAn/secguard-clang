@@ -355,8 +355,12 @@ func TestStore_ReachableFromEntry(t *testing.T) {
 	nodeB, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 2})
 	nodeC, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 3})
 
-	s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeA, DstID: nodeB, EdgeType: "CALL"})
-	s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeB, DstID: nodeC, EdgeType: "CALL"})
+	if _, err := s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeA, DstID: nodeB, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeB, DstID: nodeC, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	reachable, err := s.ReachableFromEntry(ctx, nodeA, "CALL")
 	if err != nil {
@@ -378,9 +382,15 @@ func TestStore_ReachableFromEntries(t *testing.T) {
 	nodeY, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 4})
 	nodeZ, _ := s.InsertGraphNode(ctx, &GraphNode{EntityType: "function", EntityID: 5})
 
-	s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeA, DstID: nodeB, EdgeType: "CALL"})
-	s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeX, DstID: nodeY, EdgeType: "CALL"})
-	s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeY, DstID: nodeZ, EdgeType: "CALL"})
+	if _, err := s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeA, DstID: nodeB, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeX, DstID: nodeY, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := s.InsertGraphEdge(ctx, &GraphEdge{SrcID: nodeY, DstID: nodeZ, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	reachable, err := s.ReachableFromEntries(ctx, []int64{nodeA, nodeX}, "CALL")
 	if err != nil {

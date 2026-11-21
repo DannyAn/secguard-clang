@@ -173,8 +173,12 @@ void f2(void) { void *q = malloc(8); g = q; }
 	fb, _ := store.InsertFile(ctx, &db.File{Path: pathB, Checksum: "b", LOC: 10})
 	faFn, _ := store.InsertFunction(ctx, &db.Function{FileID: fa, Name: "f1", Signature: "void f1(void)", StartLine: 4, EndLine: 4})
 	fbFn, _ := store.InsertFunction(ctx, &db.Function{FileID: fb, Name: "f2", Signature: "void f2(void)", StartLine: 4, EndLine: 4})
-	store.InsertFileScopeVariable(ctx, &db.FileScopeVariable{FileID: fa, Name: "g", Type: "void", StorageClass: "static", DeclarationLine: 3, IsPointer: true})
-	store.InsertFileScopeVariable(ctx, &db.FileScopeVariable{FileID: fb, Name: "g", Type: "void", StorageClass: "static", DeclarationLine: 3, IsPointer: true})
+	if _, err := store.InsertFileScopeVariable(ctx, &db.FileScopeVariable{FileID: fa, Name: "g", Type: "void", StorageClass: "static", DeclarationLine: 3, IsPointer: true}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := store.InsertFileScopeVariable(ctx, &db.FileScopeVariable{FileID: fb, Name: "g", Type: "void", StorageClass: "static", DeclarationLine: 3, IsPointer: true}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	p := parser.NewParser()
 	defer p.CloseAll()

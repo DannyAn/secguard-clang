@@ -83,7 +83,9 @@ func eventVars(t *testing.T, store db.Store, eventType string) map[string]bool {
 func TestIntegerOverflow_CallocVariants(t *testing.T) {
 	store, p := setupDetector(t, "tc93_int_overflow_calloc_sizeof.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewIntegerOverflowDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewIntegerOverflowDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	flagged := eventFuncs(t, store, "INTEGER_OVERFLOW")
 	for _, fn := range []string{
@@ -111,7 +113,9 @@ func TestIntegerOverflow_CallocVariants(t *testing.T) {
 func TestSizeofMisuse_TypedefPointer(t *testing.T) {
 	store, p := setupDetector(t, "tc94_sizeof_typedef_pointer.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewSizeofMisuseDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewSizeofMisuseDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	flagged := eventFuncs(t, store, "SIZEOF_MISUSE")
 	if !flagged["typedef_pointer"] {
@@ -137,7 +141,9 @@ func TestSizeofMisuse_TypedefPointer(t *testing.T) {
 func TestHardcodedSecret_EntropyAndStructured(t *testing.T) {
 	store, p := setupDetector(t, "tc95_hardcoded_secret_value_only.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewHardcodedSecretDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewHardcodedSecretDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	flagged := eventVars(t, store, "HARDCODED_SECRET")
 	if !flagged["high_entropy"] {
@@ -165,7 +171,9 @@ func TestHardcodedSecret_EntropyAndStructured(t *testing.T) {
 func TestHardcodedSecret_ZeroFunctionFile(t *testing.T) {
 	store, p := setupDetector(t, "tc96_hardcoded_secret_zero_func.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewHardcodedSecretDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewHardcodedSecretDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	flagged := eventVars(t, store, "HARDCODED_SECRET")
 	if !flagged["password"] {
@@ -182,7 +190,9 @@ func TestHardcodedSecret_ZeroFunctionFile(t *testing.T) {
 func TestHardcodedSecret_ValueProvenVsNameOnly(t *testing.T) {
 	store, p := setupDetector(t, "tc95_hardcoded_secret_value_only.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewHardcodedSecretDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewHardcodedSecretDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	events, err := store.ListEventsByType(context.Background(), "HARDCODED_SECRET")
 	if err != nil {
@@ -220,7 +230,9 @@ func TestHardcodedSecret_ValueProvenVsNameOnly(t *testing.T) {
 func TestOutOfBounds_GlobalArray(t *testing.T) {
 	store, p := setupDetector(t, "tc97_oob_global_array.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewBufferOverflowDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewBufferOverflowDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	// out-of-bounds seeds BUFFER_ACCESS with category array_oob_read.
 	ctx := context.Background()
@@ -259,7 +271,9 @@ func TestOutOfBounds_GlobalArray(t *testing.T) {
 func TestRaceCondition_AddrTakenThread(t *testing.T) {
 	store, p := setupDetector(t, "tc98_race_addr_taken_thread.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewRaceConditionDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewRaceConditionDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	events, err := store.ListEventsByType(ctx, "RACE_CONDITION")
@@ -284,7 +298,9 @@ func TestRaceCondition_AddrTakenThread(t *testing.T) {
 func TestRaceCondition_RwlockProtected(t *testing.T) {
 	store, p := setupDetector(t, "tc99_race_rwlock.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewRaceConditionDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewRaceConditionDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	events, err := store.ListEventsByType(ctx, "RACE_CONDITION")
@@ -344,7 +360,9 @@ func TestRaceCondition_ExternGlobal(t *testing.T) {
 func TestDivideByZero_DefiniteZeroAutoConfirm(t *testing.T) {
 	store, p := setupDetector(t, "tc100_divide_by_zero_definite.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewDivideByZeroDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewDivideByZeroDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	// Detector-level: only the syntactic definite-zero cases carry the marker.
 	ctx := context.Background()
@@ -400,7 +418,9 @@ func TestDivideByZero_DefiniteZeroAutoConfirm(t *testing.T) {
 func TestDivideByZero_ParamZeroPropagation(t *testing.T) {
 	store, p := setupDetector(t, "tc101_divide_by_zero_param.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewDivideByZeroDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewDivideByZeroDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	pl := planner.NewPlanner(store, p, logger)
@@ -432,7 +452,9 @@ func TestUninit_MacroLoopAndSetterMacro(t *testing.T) {
 	for _, fx := range []string{"tc102_uninit_macro_loop.c", "tc103_uninit_setter_macro.c"} {
 		store, p := setupDetector(t, fx)
 		logger := log.New(io.Discard, log.LevelWarn)
-		NewUninitVariableDetector(store, p, logger).Detect(context.Background())
+		if _, err := NewUninitVariableDetector(store, p, logger).Detect(context.Background()); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 
 		ctx := context.Background()
 		pl := planner.NewPlanner(store, p, logger)
@@ -453,7 +475,9 @@ func TestUninit_MacroLoopAndSetterMacro(t *testing.T) {
 func TestDivideByZero_UnlikelyGuard(t *testing.T) {
 	store, p := setupDetector(t, "tc104_divide_by_zero_unlikely.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewDivideByZeroDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewDivideByZeroDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	pl := planner.NewPlanner(store, p, logger)
@@ -480,7 +504,9 @@ func TestDivideByZero_UnlikelyGuard(t *testing.T) {
 func TestUncheckedReturn_DerefCheck(t *testing.T) {
 	store, p := setupDetector(t, "tc105_unchecked_return_ptr.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewUncheckedReturnDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewUncheckedReturnDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	pl := planner.NewPlanner(store, p, logger)
@@ -508,9 +534,15 @@ func TestUncheckedReturn_DerefCheck(t *testing.T) {
 func TestNullDeref_CastReassign(t *testing.T) {
 	store, p := setupDetector(t, "tc106_null_deref_cast_reassign.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewNullSourceDetector(store, p, logger).Detect(context.Background())
-	NewDereferenceDetector(store, p, logger).Detect(context.Background())
-	NewInterproceduralDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewNullSourceDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := NewDereferenceDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := NewInterproceduralDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	pl := planner.NewPlanner(store, p, logger)
@@ -538,9 +570,15 @@ func TestNullDeref_CastReassign(t *testing.T) {
 func TestNullDeref_OutputParam(t *testing.T) {
 	store, p := setupDetector(t, "tc107_null_deref_output_param.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewNullSourceDetector(store, p, logger).Detect(context.Background())
-	NewDereferenceDetector(store, p, logger).Detect(context.Background())
-	NewInterproceduralDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewNullSourceDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := NewDereferenceDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := NewInterproceduralDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	pl := planner.NewPlanner(store, p, logger)
@@ -572,9 +610,15 @@ func TestNullDeref_OutputParam(t *testing.T) {
 func TestNullDeref_InterproceduralCastAndFieldArg(t *testing.T) {
 	store, p := setupDetector(t, "tc121_interproc_cast_arg.c")
 	logger := log.New(io.Discard, log.LevelWarn)
-	NewNullSourceDetector(store, p, logger).Detect(context.Background())
-	NewDereferenceDetector(store, p, logger).Detect(context.Background())
-	NewInterproceduralDetector(store, p, logger).Detect(context.Background())
+	if _, err := NewNullSourceDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := NewDereferenceDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := NewInterproceduralDetector(store, p, logger).Detect(context.Background()); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	ctx := context.Background()
 	pl := planner.NewPlanner(store, p, logger)

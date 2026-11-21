@@ -35,7 +35,9 @@ func TestNullSource_ExtDeclReturnTypes(t *testing.T) {
 			Function string `json:"function"`
 			Origin   string `json:"origin"`
 		}
-		json.Unmarshal([]byte(e.Properties), &props)
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		if props.Origin != "external_call" {
 			continue
 		}

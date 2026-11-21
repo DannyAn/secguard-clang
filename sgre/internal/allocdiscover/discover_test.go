@@ -26,15 +26,21 @@ func TestDiscover(t *testing.T) {
 	plain := &db.Function{FileID: fileID, Name: "plain_fn", Signature: "plain_fn(int x)", ReturnType: "int"}
 	idMalloc, _ := s.InsertFunction(ctx, myMalloc)
 	idFree, _ := s.InsertFunction(ctx, myFree)
-	s.InsertFunction(ctx, plain)
+	if _, err := s.InsertFunction(ctx, plain); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	nMalloc, _ := s.GetOrCreateGraphNode(ctx, "function", idMalloc, "")
 	nFree, _ := s.GetOrCreateGraphNode(ctx, "function", idFree, "")
 	extMalloc, _ := s.GetOrCreateGraphNode(ctx, "external_function", 0, `{"name":"malloc","external":"true"}`)
 	extFree, _ := s.GetOrCreateGraphNode(ctx, "external_function", 0, `{"name":"free","external":"true"}`)
 
-	s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: nMalloc, DstID: extMalloc, EdgeType: "CALL"})
-	s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: nFree, DstID: extFree, EdgeType: "CALL"})
+	if _, err := s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: nMalloc, DstID: extMalloc, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: nFree, DstID: extFree, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	res, err := Discover(ctx, s)
 	if err != nil {
@@ -73,8 +79,12 @@ func TestDiscoverSkipsDeclaredNames(t *testing.T) {
 	// built-in VOS_*/HpeMem* or config-registered names and must not be
 	// re-suggested. Use built-in names directly (always declared) to avoid
 	// mutating apikb package state from this test.
-	s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "malloc", Signature: "malloc(size_t n)", ReturnType: "void*"})
-	s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "free", Signature: "free(void *p)", ReturnType: "void"})
+	if _, err := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "malloc", Signature: "malloc(size_t n)", ReturnType: "void*"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "free", Signature: "free(void *p)", ReturnType: "void"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	res, err := Discover(ctx, s)
 	if err != nil {
@@ -140,9 +150,15 @@ func TestDiscoverOwnershipTransfers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "list_push_back", Signature: "list_push_back(list_t *l, void *item)", ReturnType: "void"})
-	s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "dict_insert", Signature: "dict_insert(dict_t *d, void *key)", ReturnType: "void"})
-	s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "plain_fn", Signature: "plain_fn(int x)", ReturnType: "int"})
+	if _, err := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "list_push_back", Signature: "list_push_back(list_t *l, void *item)", ReturnType: "void"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "dict_insert", Signature: "dict_insert(dict_t *d, void *key)", ReturnType: "void"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "plain_fn", Signature: "plain_fn(int x)", ReturnType: "int"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	res, err := Discover(ctx, s)
 	if err != nil {

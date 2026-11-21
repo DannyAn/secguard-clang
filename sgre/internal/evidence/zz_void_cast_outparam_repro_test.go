@@ -38,7 +38,9 @@ func TestUncheckedReturn_VoidCastOutParam(t *testing.T) {
 		var props struct {
 			Function string `json:"function"`
 		}
-		json.Unmarshal([]byte(e.Properties), &props)
+		if err := json.Unmarshal([]byte(e.Properties), &props); err != nil {
+			t.Fatalf("call: %v", err)
+		}
 		switch props.Function {
 		case "HpeDynmemAlloc":
 			seenHpeDynmemAlloc = true

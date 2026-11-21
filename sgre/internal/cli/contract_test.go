@@ -20,7 +20,9 @@ func TestScanCmd_RejectsBadOutputDirBasename(t *testing.T) {
 	root := t.TempDir()
 	cPath := writeTestCFile(t, root)
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	cases := []struct{ name, dirname string }{
 		{"plain_word", "evil"},
@@ -47,9 +49,13 @@ func TestScanCmd_AcceptsWellFormedOutputDir(t *testing.T) {
 	cPath := writeTestCFile(t, root)
 	scansRoot := filepath.Join(root, ".codeagent", "secguard-clang", "scans")
 	goodDir := filepath.Join(scansRoot, "sc_2026-08-11_140000_aaaaaa")
-	os.MkdirAll(goodDir, 0755)
+	if err := os.MkdirAll(goodDir, 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 	dbPath := filepath.Join(root, ".codeagent", "secguard-clang", ".sgre", "sgre.db")
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	stdout, _, exitCode := captureOutput(func() int {
 		return runScanCmd(ctx, []string{"--db", dbPath, "--output-dir", goodDir, cPath})

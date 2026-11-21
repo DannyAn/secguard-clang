@@ -19,25 +19,43 @@ func setupConvergenceTestData(s *mockStore) {
 	loc2, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 30})
 	loc3, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 50})
 
-	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcA, LocationID: loc1, Properties: `{"variable":"p","origin":"malloc"}`})
-	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcB, LocationID: loc2, Properties: `{"variable":"q","origin":"return"}`})
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcA, LocationID: loc1, Properties: `{"variable":"p","origin":"malloc"}`}); err != nil {
+		panic(err)
+	}
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcB, LocationID: loc2, Properties: `{"variable":"q","origin":"return"}`}); err != nil {
+		panic(err)
+	}
 
-	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcA, LocationID: loc1, Properties: `{"variable":"p","expression":"p->field"}`})
-	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcB, LocationID: loc2, Properties: `{"variable":"q","expression":"*q"}`})
-	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcC, LocationID: loc3, Properties: `{"variable":"r","expression":"r[0]"}`})
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcA, LocationID: loc1, Properties: `{"variable":"p","expression":"p->field"}`}); err != nil {
+		panic(err)
+	}
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcB, LocationID: loc2, Properties: `{"variable":"q","expression":"*q"}`}); err != nil {
+		panic(err)
+	}
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "DEREFERENCE", EntityID: funcC, LocationID: loc3, Properties: `{"variable":"r","expression":"r[0]"}`}); err != nil {
+		panic(err)
+	}
 
-	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_GUARD", EntityID: funcC, LocationID: loc3, Properties: `{"variable":"r","condition":"NULL_CHECK","scope_start":45,"scope_end":60}`})
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_GUARD", EntityID: funcC, LocationID: loc3, Properties: `{"variable":"r","condition":"NULL_CHECK","scope_start":45,"scope_end":60}`}); err != nil {
+		panic(err)
+	}
 
 	nodeA, _ := s.GetOrCreateGraphNode(context.Background(), "function", funcA, "")
 	nodeB, _ := s.GetOrCreateGraphNode(context.Background(), "function", funcB, "")
 	nodeC, _ := s.GetOrCreateGraphNode(context.Background(), "function", funcC, "")
 
-	s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: nodeA, DstID: nodeB, EdgeType: "CALL"})
-	s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: nodeB, DstID: nodeC, EdgeType: "CALL"})
+	if _, err := s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: nodeA, DstID: nodeB, EdgeType: "CALL"}); err != nil {
+		panic(err)
+	}
+	if _, err := s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: nodeB, DstID: nodeC, EdgeType: "CALL"}); err != nil {
+		panic(err)
+	}
 
 	varNode1, _ := s.GetOrCreateGraphNode(context.Background(), "variable_ref", funcA, `{"name":"p"}`)
 	varNode2, _ := s.GetOrCreateGraphNode(context.Background(), "variable_ref", funcB, `{"name":"q"}`)
-	s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: varNode1, DstID: varNode2, EdgeType: "DATA_FLOW", Properties: `{"variable":"p"}`})
+	if _, err := s.InsertGraphEdge(context.Background(), &db.GraphEdge{SrcID: varNode1, DstID: varNode2, EdgeType: "DATA_FLOW", Properties: `{"variable":"p"}`}); err != nil {
+		panic(err)
+	}
 }
 
 func TestPlan_EndToEnd_ConvergencePipeline(t *testing.T) {
@@ -121,16 +139,20 @@ func TestPlan_EndToEnd_Max30Candidates(t *testing.T) {
 	fileID, _ := s.InsertFile(context.Background(), &db.File{Path: "test.c"})
 	funcID, _ := s.InsertFunction(context.Background(), &db.Function{FileID: fileID, Name: "foo", StartLine: 1, EndLine: 200})
 
-	s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcID, Properties: `{"variable":"p"}`})
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{EventType: "NULL_VALUE", EntityID: funcID, Properties: `{"variable":"p"}`}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	for i := 0; i < 40; i++ {
 		loc, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: i + 1})
-		s.InsertEvent(context.Background(), &db.SecurityEvent{
+		if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{
 			EventType:  "DEREFERENCE",
 			EntityID:   funcID,
 			LocationID: loc,
 			Properties: `{"variable":"p","expression":"p->f"}`,
-		})
+		}); err != nil {
+			t.Fatalf("insert event: %v", err)
+		}
 	}
 
 	p := NewPlanner(s, nil, nil)
@@ -150,12 +172,14 @@ func TestPlan_EndToEnd_ShortCircuit(t *testing.T) {
 	funcID, _ := s.InsertFunction(context.Background(), &db.Function{FileID: fileID, Name: "foo", StartLine: 1, EndLine: 10})
 
 	loc, _ := s.InsertLocation(context.Background(), &db.Location{FileID: fileID, Line: 5})
-	s.InsertEvent(context.Background(), &db.SecurityEvent{
+	if _, err := s.InsertEvent(context.Background(), &db.SecurityEvent{
 		EventType:  "DEREFERENCE",
 		EntityID:   funcID,
 		LocationID: loc,
 		Properties: `{"variable":"p","expression":"p->f"}`,
-	})
+	}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
 
 	p := NewPlanner(s, nil, nil)
 	result, err := p.Plan(context.Background(), "null-deref")
@@ -262,12 +286,18 @@ func TestPlan_CategorySplit_BufferAccess(t *testing.T) {
 	fid, _ := s.InsertFunction(ctx, &db.Function{FileID: fileID, Name: "oob", StartLine: 1, EndLine: 20})
 	loc1, _ := s.InsertLocation(ctx, &db.Location{FileID: fileID, Line: 5})
 	loc2, _ := s.InsertLocation(ctx, &db.Location{FileID: fileID, Line: 6})
-	s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: fid, LocationID: loc1, Properties: `{"category":"array_oob_read","expression":"arr[i]"}`})
-	s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: fid, LocationID: loc2, Properties: `{"category":"array_oob_write","expression":"buf[i]"}`})
+	if _, err := s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: fid, LocationID: loc1, Properties: `{"category":"array_oob_read","expression":"arr[i]"}`}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if _, err := s.InsertEvent(ctx, &db.SecurityEvent{EventType: "BUFFER_ACCESS", EntityID: fid, LocationID: loc2, Properties: `{"category":"array_oob_write","expression":"buf[i]"}`}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	node, _ := s.GetOrCreateGraphNode(ctx, "function", fid, "")
 	entry, _ := s.GetOrCreateGraphNode(ctx, "function", 0, `{"entry":true}`)
-	s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: entry, DstID: node, EdgeType: "CALL"})
+	if _, err := s.InsertGraphEdge(ctx, &db.GraphEdge{SrcID: entry, DstID: node, EdgeType: "CALL"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
 
 	p := NewPlanner(s, nil, nil)
 
