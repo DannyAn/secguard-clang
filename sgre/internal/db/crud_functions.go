@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 )
 
 func (s *store) InsertFunction(ctx context.Context, f *Function) (int64, error) {
@@ -81,28 +80,15 @@ func (s *store) CountFunctions(ctx context.Context) (int, error) {
 }
 
 func (s *store) ListFunctionsByIDs(ctx context.Context, ids []int64) (map[int64]*Function, error) {
-	result := make(map[int64]*Function, len(ids))
-	for _, chunk := range chunkIDs(ids, 500) {
-		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
-		args := make([]interface{}, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
-		rows, err := s.exec.QueryContext(ctx,
-			`SELECT id, file_id, name, signature, return_type, is_static, start_line, end_line FROM functions WHERE id IN (`+placeholders+`)`, args...)
-		if err != nil {
-			return nil, fmt.Errorf("db: list functions by ids: %w", err)
-		}
-		funcs, scanErr := scanFunctions(rows)
-		rows.Close()
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		for _, f := range funcs {
-			result[f.ID] = f
-		}
-	}
-	return result, nil
+	return listByIDs(ctx, s.exec, ids, "list functions by ids",
+		`SELECT id, file_id, name, signature, return_type, is_static, start_line, end_line FROM functions WHERE id IN (`,
+		func(rows *sql.Rows) (int64, *Function, error) {
+			f := &Function{}
+			if err := rows.Scan(&f.ID, &f.FileID, &f.Name, &f.Signature, &f.ReturnType, &f.IsStatic, &f.StartLine, &f.EndLine); err != nil {
+				return 0, nil, fmt.Errorf("db: scan function: %w", err)
+			}
+			return f.ID, f, nil
+		})
 }
 
 func (s *store) DeleteFunctionsByFile(ctx context.Context, fileID int64) error {

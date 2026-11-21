@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 )
 
 func (s *store) UpsertSummary(ctx context.Context, sum *FunctionSummary) error {
@@ -42,36 +41,19 @@ func (s *store) GetSummaryByFunction(ctx context.Context, functionID int64) (*Fu
 }
 
 func (s *store) ListSummariesByFunctionIDs(ctx context.Context, functionIDs []int64) (map[int64]*FunctionSummary, error) {
-	result := make(map[int64]*FunctionSummary, len(functionIDs))
-	for _, chunk := range chunkIDs(functionIDs, 500) {
-		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
-		args := make([]interface{}, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
-		rows, err := s.exec.QueryContext(ctx,
-			`SELECT function_id, return_nullable, parameter_nullable, side_effect, summary_json FROM function_summary WHERE function_id IN (`+placeholders+`)`, args...)
-		if err != nil {
-			return nil, fmt.Errorf("db: list summaries by function ids: %w", err)
-		}
-		for rows.Next() {
+	return listByIDs(ctx, s.exec, functionIDs, "list summaries by function ids",
+		`SELECT function_id, return_nullable, parameter_nullable, side_effect, summary_json FROM function_summary WHERE function_id IN (`,
+		func(rows *sql.Rows) (int64, *FunctionSummary, error) {
 			sum := &FunctionSummary{}
 			var parameterNullable, sideEffect, summaryJSON sql.NullString
-			if scanErr := rows.Scan(&sum.FunctionID, &sum.ReturnNullable, &parameterNullable, &sideEffect, &summaryJSON); scanErr != nil {
-				rows.Close()
-				return nil, fmt.Errorf("db: scan summary: %w", scanErr)
+			if err := rows.Scan(&sum.FunctionID, &sum.ReturnNullable, &parameterNullable, &sideEffect, &summaryJSON); err != nil {
+				return 0, nil, fmt.Errorf("db: scan summary: %w", err)
 			}
 			sum.ParameterNullable = parameterNullable.String
 			sum.SideEffect = sideEffect.String
 			sum.SummaryJSON = summaryJSON.String
-			result[sum.FunctionID] = sum
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("db: list summaries by function ids: %w", err)
-		}
-	}
-	return result, nil
+			return sum.FunctionID, sum, nil
+		})
 }
 
 func (s *store) UpdateReturnNullable(ctx context.Context, functionID int64, nullable bool) error {
