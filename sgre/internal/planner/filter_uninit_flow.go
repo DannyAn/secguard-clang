@@ -187,7 +187,9 @@ func (f *DefiniteInitFilter) candidateOrigin(eventsByID map[int64]*db.SecurityEv
 	var props struct {
 		Origin string `json:"origin"`
 	}
-	json.Unmarshal([]byte(event.Properties), &props)
+	if err := json.Unmarshal([]byte(event.Properties), &props); err != nil {
+		return ""
+	}
 	return props.Origin
 }
 

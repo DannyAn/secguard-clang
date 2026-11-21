@@ -137,8 +137,7 @@ func (d *CryptoMisuseDetector) detectUndersizedKey(ctx context.Context, decls []
 			for _, child := range arrayDecl.NamedChildren() {
 				if child.Kind() == "number_literal" {
 					size := 0
-					fmt.Sscanf(child.Text(), "%d", &size)
-					if size > 0 && size < 16 {
+					if _, err := fmt.Sscanf(child.Text(), "%d", &size); err == nil && size > 0 && size < 16 {
 						owner := funcs[0]
 						for _, fn := range funcs {
 							if funcLineRange(fn, decl.StartLine()) {

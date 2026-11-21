@@ -644,17 +644,17 @@ func runPipeline(ctx context.Context, store db.Store, logger *log.Logger, absPat
 // analyzer configuration.
 func reuseFingerprint(absPath string, excludeDirs, excludePaths []string) string {
 	h := sha256.New()
-	io.WriteString(h, config.ConfigChecksum())
-	io.WriteString(h, "|v:"+Version)
-	io.WriteString(h, "|det:"+strings.Join(evidence.DetectorNames(), ","))
-	io.WriteString(h, "|exd:"+strings.Join(excludeDirs, ","))
-	io.WriteString(h, "|exp:"+strings.Join(excludePaths, ","))
+	_, _ = io.WriteString(h, config.ConfigChecksum())
+	_, _ = io.WriteString(h, "|v:"+Version)
+	_, _ = io.WriteString(h, "|det:"+strings.Join(evidence.DetectorNames(), ","))
+	_, _ = io.WriteString(h, "|exd:"+strings.Join(excludeDirs, ","))
+	_, _ = io.WriteString(h, "|exp:"+strings.Join(excludePaths, ","))
 	ccPath := filepath.Join(absPath, "compile_commands.json")
 	if data, err := os.ReadFile(ccPath); err == nil {
 		h.Write([]byte("|cc:"))
 		h.Write(data)
 	} else {
-		io.WriteString(h, "|cc:none")
+		_, _ = io.WriteString(h, "|cc:none")
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

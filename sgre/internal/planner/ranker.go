@@ -75,10 +75,11 @@ func RankCandidates(ctx context.Context, candidates []Candidate, store db.Store)
 					Variable   string `json:"variable"`
 					Expression string `json:"expression"`
 				}
-				json.Unmarshal([]byte(event.Properties), &props)
-				apiName = props.Function
-				if apiName == "" {
-					apiName = props.Variable
+				if err := json.Unmarshal([]byte(event.Properties), &props); err == nil {
+					apiName = props.Function
+					if apiName == "" {
+						apiName = props.Variable
+					}
 				}
 			}
 		}
