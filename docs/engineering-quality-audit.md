@@ -15,7 +15,7 @@
 >
 > **复核修正**：初版报告把 Crapper / Dryer / Mutator 记为“未安装”，这是错误的——三者一直在 `~/.local/bin`，现在已用于复核；初版的复杂度/CRAP/重复率结论已按工具输出修正，并新增了静态检查、变异测试与系统性重复的证据。详细修正见 §3.7。
 >
-> **阶段二执行状态（2026-11-21）**：PR #309/#310/#311/#312 已合入 main（`a6ec963`）；M-07 chunked `List*ByIDs`（`5e896ac`）与 U4b `internal/scanwalk`（`385d441`）已在 main。当前分支已完成 U3b 首批测试（`5f185c2`）与 U3a 核心：626 处裸 Build/Detect 包装为错误断言（`b76beb5`），关闭 golangci 上限后 errcheck 从 794 降到 166（测试 139）。剩余 U3a 其余 errcheck、U3b 其余零覆盖路径、M-07 其余模板、U7b、M-12、L-03/L-04 见 §9/§10。§6 L-01 保留审计时的清单描述。
+> **阶段二执行状态（2026-11-21）**：PR #309/#310/#311/#312 已合入 main（`a6ec963`）；M-07 chunked `List*ByIDs`（`5e896ac`）与 U4b `internal/scanwalk`（`385d441`）已在 main。当前分支已完成 U3b 首批测试（`5f185c2`）、U3a 核心（626 处裸 Build/Detect 断言，`b76beb5`；errcheck 794→166）以及 U3b 的 `BuildPlanSummary`/`SubprocessRunner.Run` 测试（`404567c`）。剩余 U3a 其余 errcheck、U3b 其余零覆盖路径、M-07 其余模板、U7b、M-12、L-03/L-04 见 §9/§10。§6 L-01 保留审计时的清单描述。
 
 ---
 
@@ -620,7 +620,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | U5 CI 门禁 | 完成 | 新增 `.github/workflows/go-quality.yml`：gofmt + vet + 全量 test + staticcheck |
 | U7a uninit 参数结构体 | 完成（参数层） | `uninitScanInputs` 替换 20/14/13 位置参数；676/505/272 行函数体仍未拆分 |
 | U3a 测试错误传播基座 | 部分完成（核心） | 626 处裸 Build/Detect 已加断言（commit `b76beb5`）；关闭上限 errcheck 794→166（测试 139），剩余非 Build/Detect errcheck 未做 |
-| U3b 零覆盖检测路径补测 | 部分完成 | 已补 do-while CFG 与 `relationalNonZeroVar` 测试（commit `5f185c2`）；计划摘要、SubprocessRunner 等其余路径未做 |
+| U3b 零覆盖检测路径补测 | 部分完成 | 已补 do-while CFG、`relationalNonZeroVar`（`5f185c2`）、`BuildPlanSummary`、`SubprocessRunner.Run`（`404567c`）；`findFieldTypeName` 等其余路径未做 |
 | U4b 文件遍历骨架统一 | 完成 | `internal/scanwalk.Each` 统一 evidence/graph 的 ReadFile+ParseCached+Release；新增 parse/skip/cancel 测试（commit `385d441`） |
 | U4d 数据流加载器统一 | 完成 | `loadVarRefMaps` 单源；DATA_FLOW/ALIAS/RELEASE 加载器只保留边处理 |
 | U6 中型去重 | 完成 | `buildRangeFlowsForCandidates`、`collectFileScope`、`classifyUnsignedCompare`、`firstFormatTaintArg`、`scanUsageTargets` |
@@ -682,6 +682,7 @@ git cherry-pick 5e896ac   # M-07 chunked List*ByIDs
 git cherry-pick 385d441   # U4b shared scanwalk (evidence + graph)
 git cherry-pick 5f185c2   # U3b do-while CFG + relationalNonZeroVar tests
 git cherry-pick b76beb5   # U3a: assert Build/Detect errors in 106 test files
+git cherry-pick 404567c   # U3b: plan summary + subprocess runner tests
 # 文档提交可按需 cherry-pick：ba05a99、faa51a6、0c3a331，或直接保留本报告
 ```
 
@@ -768,6 +769,7 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 | U4b evidence/graph 遍历 | `385d441` | `internal/scanwalk.Each` 统一读/解析/释放循环 | `go test ./internal/scanwalk` + evidence/graph + 全测试 |
 | U3b 首批零覆盖测试 | `5f185c2` | do-while CFG 边、`relationalNonZeroVar` 边界 | `go test ./internal/graph ./internal/evidence` |
 | U3a Build/Detect 断言 | `b76beb5` | 626 处裸调用改为显式错误检查（106 个测试文件） | `go test -count=1 ./...` + 基准 |
+| U3b summary/runner 测试 | `404567c` | `BuildPlanSummary` 分支、`SubprocessRunner.Run` 成功/失败/解析 | `go test ./internal/report ./internal/worker` |
 
 回滚：每个单元可以用 `git revert <commit>` 或恢复该单元涉及的文件；已合入的提交都在 main 历史中，revert 后必须重跑 10.3 全部门禁。U1b 的 `parser.SetLanguage` 错误处理只在“语言版本不匹配”时改变行为，回滚时注意保留 error 语义。
 
