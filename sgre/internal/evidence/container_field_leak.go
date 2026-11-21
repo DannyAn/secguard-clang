@@ -529,7 +529,10 @@ func (d *MemoryLeakDetector) detectGlobalContainerFieldLeaks(ctx context.Context
 		return nil
 	}
 
-	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	summaries, err := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	if err != nil {
+		return err
+	}
 
 	// Pass 2: resolve wrapper heap witnesses and collect every function's
 	// container deletion-path facts. Resolution/emission happens afterwards so

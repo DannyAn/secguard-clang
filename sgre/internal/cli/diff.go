@@ -347,7 +347,7 @@ func runReviewCmd(ctx context.Context, kind string, args []string) int {
 		"result_sarif_note": fmt.Sprintf("%s is written by `report --audit` after classification; the review writes %s (unclassified leads at level \"note\")", report.SarifFile, report.CandidatesSarifFile),
 	}
 
-	WriteJSON(output)
+	_ = WriteJSON(output)
 	return 0
 }
 

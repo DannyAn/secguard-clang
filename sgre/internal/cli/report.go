@@ -575,7 +575,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				out["per_finding_warning"] = oc.Warning
 				fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
 			}
-			WriteJSON(out)
+			_ = WriteJSON(out)
 			return 0
 		}
 
@@ -616,7 +616,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			out["per_finding_warning"] = oc.Warning
 			fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
 		}
-		WriteJSON(out)
+		_ = WriteJSON(out)
 		return 0
 	}
 
@@ -938,7 +938,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			out["status"] = "partial"
 			out["errors"] = errs
 		}
-		WriteJSON(out)
+		_ = WriteJSON(out)
 		// A partial write is a failed write: exit non-zero so a CI gate keyed on
 		// the exit code never mistakes dropped findings for success. errs (not
 		// failedDetails) is the full set of dropped rows — it also covers the
@@ -1036,7 +1036,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				cov := deriveTypeCoverage(typeRows, candidateCount, time.Now().UnixMilli())
 				uncovered = cov.Uncovered
 			}
-			WriteJSON(map[string]interface{}{
+			_ = WriteJSON(map[string]interface{}{
 				"status":           "incomplete",
 				"scan_id":          scanID,
 				"vuln_type":        vulnType,
@@ -1075,7 +1075,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			WriteErrorJSON(fmt.Sprintf("failed to settle dispatched claims: %v", err))
 			return 1
 		}
-		WriteJSON(map[string]interface{}{
+		_ = WriteJSON(map[string]interface{}{
 			"scan_id":         scanID,
 			"vuln_type":       vulnType,
 			"ai_stage_status": "done",
@@ -1133,7 +1133,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			out["per_finding_warning"] = oc.Warning
 			fmt.Fprintf(os.Stderr, "warning: %s\n", oc.Warning)
 		}
-		WriteJSON(out)
+		_ = WriteJSON(out)
 		return 0
 	}
 
@@ -1259,7 +1259,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 			out["status"] = "partial"
 			out["errors"] = errs
 		}
-		WriteJSON(out)
+		_ = WriteJSON(out)
 		// A partial review is a failed review: exit non-zero so the orchestrator
 		// cannot misread a dropped verdict as "already persisted".
 		if len(errs) > 0 {
@@ -1353,7 +1353,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				"remaining":       remaining,
 			})
 		}
-		WriteJSON(map[string]interface{}{"scan_id": scanID, "types": rows})
+		_ = WriteJSON(map[string]interface{}{"scan_id": scanID, "types": rows})
 		return 0
 	}
 
@@ -1449,7 +1449,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				}
 			}
 			if len(unfinished) > 0 {
-				WriteJSON(map[string]interface{}{
+				_ = WriteJSON(map[string]interface{}{
 					"status":           "incomplete",
 					"scan_id":          scanID,
 					"unfinished_types": unfinished,
@@ -1696,7 +1696,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				}
 				out["warning"] = msg
 			}
-			WriteJSON(out)
+			_ = WriteJSON(out)
 		} else {
 			out := map[string]interface{}{
 				"scan_id": scanID,
@@ -1710,7 +1710,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 				out["ai_stage"] = aiTiming
 			}
 			auditNoticeFields(out, orphans, unreviewed, overview.Unclassified)
-			WriteJSON(out)
+			_ = WriteJSON(out)
 		}
 		return 0
 	}
@@ -1783,7 +1783,7 @@ func runReportCmd(ctx context.Context, args []string) int {
 	if len(items) == 0 {
 		out["message"] = "no findings in database; run 'secguard report --write ...' to persist findings after classifying candidates"
 	}
-	WriteJSON(out)
+	_ = WriteJSON(out)
 	return 0
 }
 

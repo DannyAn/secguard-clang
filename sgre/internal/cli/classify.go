@@ -36,7 +36,7 @@ func runClassifyCmd(ctx context.Context, args []string) int {
 		mode = config.Load().AIStageMode()
 	}
 	if mode == "agent" {
-		WriteJSON(map[string]string{"mode": "agent", "note": "agent mode is the LLM-orchestrator classification path; nothing to run here"})
+		_ = WriteJSON(map[string]string{"mode": "agent", "note": "agent mode is the LLM-orchestrator classification path; nothing to run here"})
 		return 0
 	}
 	if mode != "executor" {
@@ -222,7 +222,7 @@ func runClassifyCmd(ctx context.Context, args []string) int {
 		}
 	}
 
-	WriteJSON(map[string]interface{}{"scan_id": scanID, "mode": "executor", "dry_run": dryRun, "types": byType})
+	_ = WriteJSON(map[string]interface{}{"scan_id": scanID, "mode": "executor", "dry_run": dryRun, "types": byType})
 	return 0
 }
 

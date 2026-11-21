@@ -43,7 +43,7 @@ type FuncSummary struct {
 
 type summaryMap map[string]*FuncSummary
 
-func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) summaryMap {
+func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, logger *log.Logger) (summaryMap, error) {
 	summaries := make(summaryMap)
 
 	// Phase 1 computes the DIRECT facts only and retains no CFG lease. The
@@ -59,7 +59,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 	}
 	var metas []funcMeta
 
-	forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	if err := forEachFile(ctx, store, p, logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		funcDefs := root.FindAll("function_definition")
 		bodies := functionBodyMap(funcDefs)
 		calls := root.FindAll("call_expression")
@@ -113,7 +113,9 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 			}
 			metas = append(metas, funcMeta{file: file, fn: f, params: params, pointerParams: pointerParams})
 		}
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	// Group by file so phase 2 parses one file at a time and releases its AST
 	// and CFG leases before moving on.
@@ -202,7 +204,7 @@ func buildFuncSummaries(ctx context.Context, store db.Store, p *parser.Parser, l
 		logger.Warn("persist func summaries failed", "err", err)
 	}
 
-	return summaries
+	return summaries, nil
 }
 
 // persistFuncSummaries writes each function's out-param write state into

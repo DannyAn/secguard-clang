@@ -137,7 +137,7 @@ func runSchemaCmd(args []string) int {
 			WriteErrorJSON(fmt.Sprintf("unknown table %q; available: %s", tableName, strings.Join(tableNames, ", ")))
 			return 1
 		}
-		WriteJSON(map[string]interface{}{
+		_ = WriteJSON(map[string]interface{}{
 			"table":   tableName,
 			"columns": cols,
 			"note":    agentSchemaNotes[tableName],
@@ -153,7 +153,7 @@ func runSchemaCmd(args []string) int {
 		})
 	}
 
-	WriteJSON(map[string]interface{}{
+	_ = WriteJSON(map[string]interface{}{
 		"tables": tables,
 		"notes":  agentSchemaNotes,
 		"examples": []string{

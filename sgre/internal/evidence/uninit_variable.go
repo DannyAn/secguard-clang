@@ -74,7 +74,10 @@ func (d *UninitVariableDetector) Name() string { return "uninit_variable" }
 func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, error) {
 	result := DetectResult{}
 
-	summaries := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	summaries, err := buildFuncSummaries(ctx, d.store, d.parser, d.logger)
+	if err != nil {
+		return result, err
+	}
 	// Macro write-summaries are collected across the whole scan tree: a macro
 	// defined in a .h header (POOL_FOR, LIST_FOR_EACH, ...) and called in a .c
 	// source is invisible to the per-file WriteSummaries of the source file, so
@@ -88,7 +91,7 @@ func (d *UninitVariableDetector) Detect(ctx context.Context) (DetectResult, erro
 	// to those locals instead of a certain-uninit false positive.
 	objectMacroWrites, unionTypedefs := d.collectObjectMacroWrites(ctx)
 
-	err := forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
+	err = forEachFile(ctx, d.store, d.parser, d.logger, func(file *db.File, root parser.Node, funcs []*db.Function, tree *parser.Tree) {
 		// The three sub-detectors plus BuildCFG used to issue ~21 whole-tree
 		// FindAll walks per function when handed the file root (and one
 		// full-file walk per function just to locate the function subtree);
