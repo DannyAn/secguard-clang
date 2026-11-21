@@ -15,7 +15,7 @@
 >
 > **复核修正**：初版报告把 Crapper / Dryer / Mutator 记为“未安装”，这是错误的——三者一直在 `~/.local/bin`，现在已用于复核；初版的复杂度/CRAP/重复率结论已按工具输出修正，并新增了静态检查、变异测试与系统性重复的证据。详细修正见 §3.7。
 >
-> **阶段二执行状态（2026-11-21）**：PR #309–#316 已合入 main（`0b515dc`）。U1/U2/U1b/U3a/U3b/U4a/U4c/U5/U7a(参数层)/U4d/U6/U4b 完成；U3a 达 uncapped golangci **0 findings**。M-07 部分完成：chunked `List*ByIDs` + `queryList` 统一 6 个 List 函数（`8c07955`）；剩余 scan/CRUD 模板与 Dryer 大块。剩余 U7b、M-12、L-03/L-04、U7a 函数体拆分见 §9/§10。§6 L-01 保留审计时的清单描述。
+> **阶段二执行状态（2026-11-21）**：PR #309–#316 已合入 main（`0b515dc`）。U1/U2/U1b/U3a/U3b/U4a/U4c/U5/U7a(参数层)/U4d/U6/U4b 完成；U3a 达 uncapped golangci **0 findings**。M-07 部分完成：chunked `List*ByIDs` + `queryList` 统一 15 个 List 函数（`8c07955`、`94b188f`）；剩余 24 处 scan/CRUD 循环与 Dryer 大块。剩余 U7b、M-12、L-03/L-04、U7a 函数体拆分见 §9/§10。§6 L-01 保留审计时的清单描述。
 
 ---
 
@@ -624,7 +624,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | U4b 文件遍历骨架统一 | 完成 | `internal/scanwalk.Each` 统一 evidence/graph 的 ReadFile+ParseCached+Release；新增 parse/skip/cancel 测试（commit `385d441`） |
 | U4d 数据流加载器统一 | 完成 | `loadVarRefMaps` 单源；DATA_FLOW/ALIAS/RELEASE 加载器只保留边处理 |
 | U6 中型去重 | 完成 | `buildRangeFlowsForCandidates`、`collectFileScope`、`classifyUnsignedCompare`、`firstFormatTaintArg`、`scanUsageTargets` |
-| M-07 DB 模板去重 | 部分完成 | `listByIDs` 统一 4 个 chunked `List*ByIDs`（`5e896ac`）；`queryList` 统一 6 个 List 函数（`8c07955`）；其余 33 处 scan/CRUD 模板未做 |
+| M-07 DB 模板去重 | 部分完成 | `listByIDs` 统一 4 个 chunked `List*ByIDs`（`5e896ac`）；`queryList` 统一 15 个 List 函数（`8c07955`、`94b188f`）；其余 24 处 scan/CRUD 循环未做 |
 | U7b runReportCmd 拆分 | 未完成 | 1,472 行、10 个模式；需先建 golden 输出，属独立大型 PR |
 | M-12 源文件重复读取 | 未完成 | 需在大语料量化 I/O 后再决定缓存方案 |
 | L-03/L-04 基准与 CWE parity | 未完成 | 0 个 Benchmark；db 默认 CWE 集合仍需 parity 测试 |
@@ -689,6 +689,7 @@ git cherry-pick 82ac5e2   # U3a: production errcheck paths
 git cherry-pick 84c5909   # U3a: propagate free/race traversal errors; clear production errcheck
 git cherry-pick 67b16c8   # U3a: check remaining test errors (uncapped lint 0)
 git cherry-pick 8c07955   # M-07: queryList rows lifecycle
+git cherry-pick 94b188f   # M-07: queryList for locations/expressions/graph lists
 # 文档提交可按需 cherry-pick：ba05a99、faa51a6、0c3a331，或直接保留本报告
 ```
 
@@ -781,6 +782,7 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 | U3a 生产 errcheck 清零 | `84c5909` | free summary/race 遍历错误传播；CLI WriteJSON 显式 best-effort | 全测试 + 基准 |
 | U3a 测试 errcheck 清零 | `67b16c8` | 127 处测试调用显式断言；uncapped golangci 0 | 全测试 + 基准 |
 | M-07 queryList | `8c07955` | 6 个 List 函数共享 rows 生命周期 | `go test ./internal/db` + 全测试 + 基准 |
+| M-07 queryList 扩展 | `94b188f` | 9 个 location/expression/graph List 函数 | `go test ./internal/db` + 全测试 + 基准 |
 
 回滚：每个单元可以用 `git revert <commit>` 或恢复该单元涉及的文件；已合入的提交都在 main 历史中，revert 后必须重跑 10.3 全部门禁。U1b 的 `parser.SetLanguage` 错误处理只在“语言版本不匹配”时改变行为，回滚时注意保留 error 语义。
 
