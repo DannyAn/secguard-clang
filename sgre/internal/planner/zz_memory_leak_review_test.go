@@ -349,3 +349,29 @@ void build(void) {
 		t.Errorf("build: table_clear(t) frees only t->items, the Table base still leaks, got %v", keysOf(got))
 	}
 }
+
+// issue #302: a business-named release helper may free a NON-first parameter
+// (`release(int n, T *t)` frees t, the second argument). The old code only read
+// ParamDirectFrees[0], so it missed the release and reported a false-positive
+// leak on the caller's second argument.
+func TestMemoryLeakReview_NonFirstParamFreeHelper(t *testing.T) {
+	src := `#include <stdlib.h>
+
+typedef struct Table { int *items; } Table;
+
+void release_after(int n, Table *t) {
+    (void)n;
+    free(t);
+}
+
+void build(void) {
+    Table *t = malloc(sizeof(Table));
+    if (!t) return;
+    release_after(0, t);
+}
+`
+	got := planMemoryLeak(t, src)
+	if _, ok := got["build"]; ok {
+		t.Errorf("build: release_after(0, t) frees its second argument t, must not leak, got %v", keysOf(got))
+	}
+}
