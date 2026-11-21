@@ -110,7 +110,7 @@ func TestBuildLayouts_PointerField(t *testing.T) {
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
 
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "S"}]
 	if tl.Size != 16 {
 		t.Errorf("size: want 16, got %d", tl.Size)
 	}
@@ -126,7 +126,7 @@ func TestBuildLayouts_ArrayField(t *testing.T) {
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
 
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "S"}]
 	if tl.Size != 12 {
 		t.Errorf("size: want 12, got %d", tl.Size)
 	}
@@ -206,7 +206,7 @@ struct Anon {
 	root := parseRoot(t, src)
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "Anon"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "Anon"}]
 	if !tl.IsUnknown() {
 		t.Errorf("anonymous aggregate member should make the layout unknown, got %+v", tl)
 	}
@@ -217,7 +217,7 @@ func TestBuildLayouts_MultidimensionalArray(t *testing.T) {
 	root := parseRoot(t, src)
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "M"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "M"}]
 	if tl.IsUnknown() {
 		t.Fatalf("M should be resolvable: %q", tl.Unknown)
 	}
@@ -236,7 +236,7 @@ func TestBuildLayouts_FlexibleArrayIsArray(t *testing.T) {
 	root := parseRoot(t, src)
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "F"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "F"}]
 	if tl.IsUnknown() {
 		t.Fatalf("F should be resolvable: %q", tl.Unknown)
 	}
@@ -252,7 +252,7 @@ func TestBuildLayouts_Union(t *testing.T) {
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
 
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "U"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "U"}]
 	if tl.Size != 8 {
 		t.Errorf("union size: want 8, got %d", tl.Size)
 	}
@@ -267,7 +267,7 @@ func TestBuildLayouts_UnknownType(t *testing.T) {
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
 
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "S"}]
 	if !tl.IsUnknown() {
 		t.Errorf("S with unresolvable field should be unknown, got %+v", tl)
 	}
@@ -279,7 +279,7 @@ func TestBuildLayouts_ProvenanceNoCompileCommands(t *testing.T) {
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, layoutProvenance(false))
 
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "S"}]
 	if tl.Provenance != typeinfo.ProvenanceAssumedDefaultABI {
 		t.Errorf("want assumed_default_abi, got %q", tl.Provenance)
 	}
@@ -294,7 +294,7 @@ func TestBuildLayouts_ProvenanceWithCompileCommands(t *testing.T) {
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, layoutProvenance(true))
 
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "S"}]
 	// Phase 1 MVP: layoutProvenance 始终返回 assumed_default_abi，
 	// 因为"有 compile_commands"不等于"配置完整"（P0-2）。
 	// Phase 2 接线完整配置检查后才升级为 derived_from_complete_config。
@@ -314,7 +314,7 @@ struct S { char buf[BUF_SIZE]; };`
 	decls := collectStructDecls(root, macros)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
 
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "S"}]
 	if tl.IsUnknown() {
 		t.Fatalf("S should be resolvable: %q", tl.Unknown)
 	}
@@ -331,7 +331,7 @@ struct P { char tag; long long value; };
 	root := parseRoot(t, src)
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "P"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "P"}]
 	if !tl.IsUnknown() {
 		t.Errorf("#pragma pack must make the layout unknown, got %+v", tl)
 	}
@@ -344,7 +344,7 @@ func TestBuildLayouts_UnknownArrayBeforeFieldUnknown(t *testing.T) {
 	root := parseRoot(t, src)
 	decls := collectStructDecls(root, nil)
 	layouts := buildLayouts(decls, typeinfo.ABILP64, 0, typeinfo.ProvenanceAssumedDefaultABI)
-	tl, _ := layouts[typeinfo.LayoutKey{Type: "S"}]
+	tl := layouts[typeinfo.LayoutKey{Type: "S"}]
 	if !tl.IsUnknown() {
 		t.Errorf("unknown-length array before another field must be unknown, got %+v", tl)
 	}
