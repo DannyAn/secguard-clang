@@ -15,7 +15,7 @@
 >
 > **复核修正**：初版报告把 Crapper / Dryer / Mutator 记为“未安装”，这是错误的——三者一直在 `~/.local/bin`，现在已用于复核；初版的复杂度/CRAP/重复率结论已按工具输出修正，并新增了静态检查、变异测试与系统性重复的证据。详细修正见 §3.7。
 >
-> **阶段二执行状态（2026-11-21）**：已完成 U1、U2、U1b、U4a、U4c、U8、U5、U7a、U4d、U6（range/detector 部分）、U4b（evidence 遍历部分）；U3a/U3b、U6 剩余助手、M-07、U7b、M-12 等大型结构/测试改造尚未完成。改动已在 PR #309（draft）。§6 L-01 保留审计时的清单描述。
+> **阶段二执行状态（2026-11-21）**：已完成 U1、U2、U1b、U4a、U4c、U8、U5、U7a、U4d、U6（range/detector/signed/injection 部分）、U4b（evidence 遍历部分）；U3a/U3b、U6 unchecked-return 助手、M-07、U7b、M-12 等大型结构/测试改造尚未完成。改动已在 PR #309（draft）。§6 L-01 保留审计时的清单描述。
 
 ---
 
@@ -623,7 +623,7 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | U3b 零覆盖检测路径补测 | 未完成 | relationalNonZeroVar、do-while CFG、计划摘要等；需逐函数设计用例 |
 | U4b 文件遍历骨架统一 | 部分完成 | evidence 三变体已收敛到 `forEachParsedFile`；graph 副本仍受 RepoIndex 跨包边界限制 |
 | U4d 数据流加载器统一 | 完成 | `loadVarRefMaps` 单源；DATA_FLOW/ALIAS/RELEASE 加载器只保留边处理 |
-| U6 中型去重 | 部分完成 | `buildRangeFlowsForCandidates`、`collectFileScope` 已完成；signed/use/injection 助手未做 |
+| U6 中型去重 | 部分完成 | `buildRangeFlowsForCandidates`、`collectFileScope`、`classifyUnsignedCompare`、`firstFormatTaintArg` 已完成；unchecked-return use-scan 助手未做 |
 | M-07 DB 模板去重 | 未完成 | Dryer 62 对大块都在 internal/db；需统一 List/scan/chunk 模板 |
 | U7b runReportCmd 拆分 | 未完成 | 1,472 行、10 个模式；需先建 golden 输出，属独立大型 PR |
 | M-12 源文件重复读取 | 未完成 | 需在大语料量化 I/O 后再决定缓存方案 |
