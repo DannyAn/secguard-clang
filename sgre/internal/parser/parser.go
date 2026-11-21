@@ -198,6 +198,19 @@ func (p *Parser) SetMaxCachedTrees(n int) {
 	p.maxCachedTrees = n
 }
 
+// MaxCachedTrees returns the configured AST cache bound (0 = unbounded).
+// Consumers that pin their own borrows (the planner's fileParseCache) derive
+// their pin limit from this so the two caches stay consistent instead of one
+// hardcoding a smaller, unrelated bound.
+func (p *Parser) MaxCachedTrees() int {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxCachedTrees
+}
+
 // Parse parses source with the parser's shared instance. This is only safe for
 // sequential callers that finish using (and Close) the returned tree before the
 // next Parse on this parser — the indexer follows that pattern (the planner
