@@ -450,29 +450,43 @@ func (d *MemoryLeakDetector) findFrees(ctx context.Context, f *db.Function, file
 			}
 			continue
 		}
-		if !apikb.IsDeallocator(callName) {
-			// Arbitrarily-named release helper (issue #281 M1 residual): a callee
-			// whose body frees a pointer parameter directly (`void
-			// table_teardown(T *t){ ...; free(t); }`) releases that argument even
-			// though the name carries no free/destroy spelling. ParamDirectFrees
-			// is the every-path direct-free fact keyed by parameter index, so a
-			// helper may release any argument position, not only the first
-			// (`void release(int n, T *t){ free(t); }` frees the second). A
-			// field-only free (ParamFieldFrees) does NOT release the base pointer
-			// and stays a leak, matching the supplement's "helper releases only
-			// members" case.
-			if s, ok := summaries[callName]; ok {
-				args := getCallArgs(call)
-				for argIdx, arg := range args {
-					if s.ParamDirectFrees[argIdx] {
-						recordFree(freeArgKey(arg), call.StartLine(), callName)
-					}
+		if apikb.IsDeclaredDeallocator(callName) {
+			// A DECLARED deallocator (free/freeaddrinfo/freeifaddrs + registered)
+			// frees its FIRST argument by contract, so `free(p)` releases p.
+			if args := getCallArgs(call); len(args) > 0 {
+				recordFree(freeArgKey(args[0]), call.StartLine(), callName)
+			}
+			continue
+		}
+		// Arbitrarily-named release helper (issue #281 M1 residual) OR a
+		// heuristic deallocator (name ends "free"/"free_f" or contains
+		// "_destroy"/"_delete"/"_cleanup"/"_recycle" but is not declared): a
+		// callee whose body frees a pointer parameter directly (`void
+		// table_teardown(T *t){ ...; free(t); }`) releases that argument even
+		// though the name alone does not prove WHICH parameter is freed.
+		// ParamDirectFrees is the every-path direct-free fact keyed by parameter
+		// index, so a helper may release any argument position, not only the
+		// first (`void release(int n, T *t){ free(t); }` frees the second, and
+		// `void pair_destroy(int flags, T *t){ free(t); }` frees the second even
+		// though "_destroy" matches the deallocator heuristic). A field-only free
+		// (ParamFieldFrees) does NOT release the base pointer and stays a leak,
+		// matching the supplement's "helper releases only members" case.
+		if s, ok := summaries[callName]; ok {
+			args := getCallArgs(call)
+			for argIdx, arg := range args {
+				if s.ParamDirectFrees[argIdx] {
+					recordFree(freeArgKey(arg), call.StartLine(), callName)
 				}
 			}
 			continue
 		}
-		if args := getCallArgs(call); len(args) > 0 {
-			recordFree(freeArgKey(args[0]), call.StartLine(), callName)
+		// A heuristic deallocator with no in-tree summary (an external
+		// `nlog_free(p)` / `nat_free(p)` wrapper) has only the name convention:
+		// the deallocator-shaped name releases its first argument.
+		if apikb.IsDeallocator(callName) {
+			if args := getCallArgs(call); len(args) > 0 {
+				recordFree(freeArgKey(args[0]), call.StartLine(), callName)
+			}
 		}
 	}
 	return frees

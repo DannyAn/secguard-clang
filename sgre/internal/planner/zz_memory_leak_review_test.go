@@ -375,3 +375,54 @@ void build(void) {
 		t.Errorf("build: release_after(0, t) frees its second argument t, must not leak, got %v", keysOf(got))
 	}
 }
+
+// issue #302 follow-up: a HEURISTIC deallocator name (`_destroy` suffix) also
+// must not assume the FIRST argument is freed — the summary's per-parameter
+// facts decide. `pair_destroy(int flags, T *t)` frees its second argument, but
+// the old findFrees treated every IsDeallocator name as freeing args[0] and
+// reported a false-positive leak on t.
+func TestMemoryLeakReview_HeuristicDeallocNonFirstParam(t *testing.T) {
+	src := `#include <stdlib.h>
+
+typedef struct Table { int *items; } Table;
+
+void pair_destroy(int flags, Table *t) {
+    (void)flags;
+    free(t);
+}
+
+void build(void) {
+    Table *t = malloc(sizeof(Table));
+    if (!t) return;
+    pair_destroy(0, t);
+}
+`
+	got := planMemoryLeak(t, src)
+	if _, ok := got["build"]; ok {
+		t.Errorf("build: pair_destroy(0, t) frees its second argument t, must not leak, got %v", keysOf(got))
+	}
+}
+
+// issue #302 follow-up: a heuristic deallocator name (`_destroy` suffix) that
+// frees its FIRST argument must still be recognized as a release — the summary
+// path must not regress the conventional first-argument case.
+func TestMemoryLeakReview_HeuristicDeallocFirstParam(t *testing.T) {
+	src := `#include <stdlib.h>
+
+typedef struct Table { int *items; } Table;
+
+void table_destroy(Table *t) {
+    free(t);
+}
+
+void build(void) {
+    Table *t = malloc(sizeof(Table));
+    if (!t) return;
+    table_destroy(t);
+}
+`
+	got := planMemoryLeak(t, src)
+	if _, ok := got["build"]; ok {
+		t.Errorf("build: table_destroy(t) frees its first argument t, must not leak, got %v", keysOf(got))
+	}
+}
