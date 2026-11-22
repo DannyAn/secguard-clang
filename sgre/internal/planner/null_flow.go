@@ -31,6 +31,27 @@ import (
 // NOT null on every path, never falsely clear a null that could reach the
 // dereference. When the parser or source file is unavailable the caller falls
 // back to the old line-order heuristic, preserving the offline/mock behavior.
+//
+// Algorithm (reaching sources over the statement CFG):
+//
+//	may tier (runDataflow):  IN[n] = ⋃ OUT[pred];  OUT[n] = transfer(IN[n])
+//	must tier (runMustDataflow): IN[n] = ⋂ OUT[pred]; OUT[n] = mustTransfer(...)
+//
+// The state maps each variable to the set of source node IDs that may (resp.
+// must) reach it. transfer applies, in order: copy (a plain assignment copies
+// the right-hand side's sources; a field-sensitive read `q = p->f` copies the
+// location `p->f`), kill (any non-copy reassignment clears the variable and
+// its `p->*`/`p.*`/`p[i]` fields), then gen (the node's own source, identified
+// by node ID). Guard edges may kill a source only on the guarded branch, so
+// the edge is cloned before mutation. Both tiers seed the worklist with every
+// node (a gen/kill node must be visited even when its predecessor contributes
+// nothing); the may lattice only grows and the must lattice only shrinks, so
+// the worklist reaches a monotone fixpoint independent of iteration order.
+//
+// The may result decides candidate retention (drop only when no source can
+// reach the sink); the must result decides the definite/auto-confirmed tier
+// plus the weak and ternary guard models.
+
 // copyPair is one intra-procedural value flow: at line, lhs receives rhs's
 // value (`lhs = rhs`).
 type copyPair struct {
