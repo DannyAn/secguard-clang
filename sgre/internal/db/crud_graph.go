@@ -209,23 +209,21 @@ func (s *store) ReachableFromEntries(ctx context.Context, entryNodeIDs []int64, 
 	if err != nil {
 		return nil, fmt.Errorf("db: reachable from entries: marshal seeds: %w", err)
 	}
-	rows, err := s.exec.QueryContext(ctx, `
+	ids, err := queryList(ctx, s.exec, `
 		WITH RECURSIVE reach(node) AS (
 			SELECT CAST(value AS INTEGER) FROM json_each(?)
 			UNION
 			SELECT ge.dst_id FROM graph_edges ge JOIN reach r ON ge.src_id = r.node WHERE ge.edge_type = ?
-		) SELECT DISTINCT node FROM reach`, string(seeds), edgeType)
+		) SELECT DISTINCT node FROM reach`, []interface{}{string(seeds), edgeType},
+		func(rows *sql.Rows) (int64, error) {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return 0, err
+			}
+			return id, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: reachable from entries: %w", err)
 	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("db: reachable from entries: scan: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return ids, nil
 }

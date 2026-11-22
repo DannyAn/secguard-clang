@@ -97,25 +97,11 @@ func (s *store) ListScanRuns(ctx context.Context, limit int) ([]*ScanRun, error)
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
 	}
-	rows, err := s.exec.QueryContext(ctx, query)
+	runs, err := queryList(ctx, s.exec, query, nil, scanScanRunRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list scan_runs: %w", err)
 	}
-	defer rows.Close()
-	var runs []*ScanRun
-	for rows.Next() {
-		r := &ScanRun{}
-		var aiSource sql.NullString
-		var scanMode sql.NullString
-		if err := rows.Scan(&r.ID, &r.ScanID, &r.SourceRevision, &r.DurationMs, &r.AIDurationMs, &aiSource, &r.IndexMs, &r.GraphMs, &r.DetectorsMs, &r.PlanMs, &r.ReportMs,
-			&r.FilesIndexed, &r.FunctionsIndexed, &r.SeedCount, &r.FinalCount, &r.ReportBytes, &r.EvidenceBytes, &r.CreatedAt, &r.CompletionState, &scanMode); err != nil {
-			return nil, fmt.Errorf("db: scan scan_run: %w", err)
-		}
-		r.AIDurationSource = aiSource.String
-		r.ScanMode = scanMode.String
-		runs = append(runs, r)
-	}
-	return runs, rows.Err()
+	return runs, nil
 }
 func (s *store) SetScanRunCompletionState(ctx context.Context, scanID, state string) error {
 	// A failed scan never reaches the final UpsertScanRun, so duration_ms would
@@ -158,22 +144,33 @@ func (s *store) MarkStaleRunningAsFailed(ctx context.Context, excludeScanID stri
 // excluding the scan that is starting now, in creation order. Callers use it to
 // mark the corresponding scan directories before MarkStaleRunningAsFailed flips
 // the rows (an OOM-killed process never runs its own failure finalizer).
+func scanScanRunRow(rows *sql.Rows) (*ScanRun, error) {
+	r := &ScanRun{}
+	var aiSource sql.NullString
+	var scanMode sql.NullString
+	if err := rows.Scan(&r.ID, &r.ScanID, &r.SourceRevision, &r.DurationMs, &r.AIDurationMs, &aiSource, &r.IndexMs, &r.GraphMs, &r.DetectorsMs, &r.PlanMs, &r.ReportMs,
+		&r.FilesIndexed, &r.FunctionsIndexed, &r.SeedCount, &r.FinalCount, &r.ReportBytes, &r.EvidenceBytes, &r.CreatedAt, &r.CompletionState, &scanMode); err != nil {
+		return nil, fmt.Errorf("db: scan scan_run: %w", err)
+	}
+	r.AIDurationSource = aiSource.String
+	r.ScanMode = scanMode.String
+	return r, nil
+}
+
 func (s *store) StaleRunningScanIDs(ctx context.Context, excludeScanID string) ([]string, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT scan_id FROM scan_runs WHERE completion_state = 'running' AND scan_id <> ? ORDER BY created_at`, excludeScanID)
+	ids, err := queryList(ctx, s.exec,
+		`SELECT scan_id FROM scan_runs WHERE completion_state = 'running' AND scan_id <> ? ORDER BY created_at`, []interface{}{excludeScanID},
+		func(rows *sql.Rows) (string, error) {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return "", err
+			}
+			return id, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list stale running scan ids: %w", err)
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("db: scan stale running id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
 func (s *store) InsertIncompleteTask(ctx context.Context, task *ScanIncompleteTask) error {
@@ -191,20 +188,18 @@ func (s *store) InsertIncompleteTask(ctx context.Context, task *ScanIncompleteTa
 }
 
 func (s *store) ListIncompleteTasks(ctx context.Context, scanID string) ([]*ScanIncompleteTask, error) {
-	rows, err := s.exec.QueryContext(ctx,
+	tasks, err := queryList(ctx, s.exec,
 		`SELECT id, scan_id, phase, function_id, file_path, scale, reason, detail, created_at
-		 FROM scan_incomplete_tasks WHERE scan_id = ? ORDER BY created_at`, scanID)
+		 FROM scan_incomplete_tasks WHERE scan_id = ? ORDER BY created_at`, []interface{}{scanID},
+		func(rows *sql.Rows) (*ScanIncompleteTask, error) {
+			t := &ScanIncompleteTask{}
+			if err := rows.Scan(&t.ID, &t.ScanID, &t.Phase, &t.FunctionID, &t.FilePath, &t.Scale, &t.Reason, &t.Detail, &t.CreatedAt); err != nil {
+				return nil, err
+			}
+			return t, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list incomplete tasks: %w", err)
 	}
-	defer rows.Close()
-	var tasks []*ScanIncompleteTask
-	for rows.Next() {
-		t := &ScanIncompleteTask{}
-		if err := rows.Scan(&t.ID, &t.ScanID, &t.Phase, &t.FunctionID, &t.FilePath, &t.Scale, &t.Reason, &t.Detail, &t.CreatedAt); err != nil {
-			return nil, fmt.Errorf("db: scan incomplete task: %w", err)
-		}
-		tasks = append(tasks, t)
-	}
-	return tasks, rows.Err()
+	return tasks, nil
 }

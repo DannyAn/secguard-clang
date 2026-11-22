@@ -68,13 +68,12 @@ func (s *store) GetEventByID(ctx context.Context, id int64) (*SecurityEvent, err
 }
 
 func (s *store) ListEventsByType(ctx context.Context, eventType string) ([]*SecurityEvent, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE event_type = ? ORDER BY id`, eventType)
+	events, err := queryList(ctx, s.exec,
+		`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE event_type = ? ORDER BY id`, []interface{}{eventType}, scanEventRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list events by type: %w", err)
 	}
-	defer rows.Close()
-	return scanEvents(rows)
+	return events, nil
 }
 
 func (s *store) CountEventsByType(ctx context.Context, eventType string) (int, error) {
@@ -88,23 +87,21 @@ func (s *store) CountEventsByType(ctx context.Context, eventType string) (int, e
 }
 
 func (s *store) ListEventsByEntity(ctx context.Context, entityID int64) ([]*SecurityEvent, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE entity_id = ? ORDER BY id`, entityID)
+	events, err := queryList(ctx, s.exec,
+		`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE entity_id = ? ORDER BY id`, []interface{}{entityID}, scanEventRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list events by entity: %w", err)
 	}
-	defer rows.Close()
-	return scanEvents(rows)
+	return events, nil
 }
 
 func (s *store) ListEventsByTypeAndEntity(ctx context.Context, eventType string, entityID int64) ([]*SecurityEvent, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE event_type = ? AND entity_id = ? ORDER BY id`, eventType, entityID)
+	events, err := queryList(ctx, s.exec,
+		`SELECT id, event_type, entity_id, location_id, properties FROM security_events WHERE event_type = ? AND entity_id = ? ORDER BY id`, []interface{}{eventType, entityID}, scanEventRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list events by type and entity: %w", err)
 	}
-	defer rows.Close()
-	return scanEvents(rows)
+	return events, nil
 }
 
 func (s *store) ListEventsByIDs(ctx context.Context, ids []int64) (map[int64]*SecurityEvent, error) {
@@ -154,14 +151,10 @@ func (s *store) ListEventLocationKeysByType(ctx context.Context, eventType strin
 	return result, nil
 }
 
-func scanEvents(rows *sql.Rows) ([]*SecurityEvent, error) {
-	var events []*SecurityEvent
-	for rows.Next() {
-		e := &SecurityEvent{}
-		if err := rows.Scan(&e.ID, &e.EventType, &e.EntityID, &e.LocationID, &e.Properties); err != nil {
-			return nil, fmt.Errorf("db: scan event: %w", err)
-		}
-		events = append(events, e)
+func scanEventRow(rows *sql.Rows) (*SecurityEvent, error) {
+	e := &SecurityEvent{}
+	if err := rows.Scan(&e.ID, &e.EventType, &e.EntityID, &e.LocationID, &e.Properties); err != nil {
+		return nil, fmt.Errorf("db: scan event: %w", err)
 	}
-	return events, rows.Err()
+	return e, nil
 }

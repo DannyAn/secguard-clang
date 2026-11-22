@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -33,21 +34,19 @@ func (s *store) InsertFileScopeVariable(ctx context.Context, v *FileScopeVariabl
 }
 
 func (s *store) ListFileScopeVariables(ctx context.Context) ([]*FileScopeVariable, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, file_id, name, type, storage_class, declaration_line, is_pointer FROM file_scope_variables ORDER BY file_id, declaration_line`)
+	vars, err := queryList(ctx, s.exec,
+		`SELECT id, file_id, name, type, storage_class, declaration_line, is_pointer FROM file_scope_variables ORDER BY file_id, declaration_line`, nil,
+		func(rows *sql.Rows) (*FileScopeVariable, error) {
+			v := &FileScopeVariable{}
+			if err := rows.Scan(&v.ID, &v.FileID, &v.Name, &v.Type, &v.StorageClass, &v.DeclarationLine, &v.IsPointer); err != nil {
+				return nil, err
+			}
+			return v, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list file scope variables: %w", err)
 	}
-	defer rows.Close()
-	var vars []*FileScopeVariable
-	for rows.Next() {
-		v := &FileScopeVariable{}
-		if err := rows.Scan(&v.ID, &v.FileID, &v.Name, &v.Type, &v.StorageClass, &v.DeclarationLine, &v.IsPointer); err != nil {
-			return nil, fmt.Errorf("db: scan file scope variable: %w", err)
-		}
-		vars = append(vars, v)
-	}
-	return vars, rows.Err()
+	return vars, nil
 }
 
 func (s *store) DeleteFileScopeVariablesByFile(ctx context.Context, fileID int64) error {

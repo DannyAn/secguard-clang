@@ -165,39 +165,33 @@ func (s *store) UpsertFinding(ctx context.Context, f *Finding) (int64, error) {
 }
 
 func (s *store) ListFindings(ctx context.Context) ([]*Finding, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings ORDER BY id`)
+	findings, err := queryList(ctx, s.exec,
+		`SELECT id, rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings ORDER BY id`, nil, scanFindingRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list findings: %w", err)
 	}
-	defer rows.Close()
-	return scanFindings(rows)
+	return findings, nil
 }
 
 func (s *store) ListFindingsByStatus(ctx context.Context, status string) ([]*Finding, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE status = ? ORDER BY id`, status)
+	findings, err := queryList(ctx, s.exec,
+		`SELECT id, rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE status = ? ORDER BY id`, []interface{}{status}, scanFindingRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list findings by status: %w", err)
 	}
-	defer rows.Close()
-	return scanFindings(rows)
+	return findings, nil
 }
 
-func scanFindings(rows *sql.Rows) ([]*Finding, error) {
-	var findings []*Finding
-	for rows.Next() {
-		f := &Finding{}
-		var scanID, fingerprint, vulnType sql.NullString
-		if err := rows.Scan(&f.ID, &f.RuleID, &vulnType, &f.Severity, &f.Confidence, &f.Evidence, &f.Status, &f.FilePath, &f.LineNumber, &f.FunctionName, &f.Variable, &f.Properties, &f.Summary, &f.Reasoning, &f.FixStrategy, &f.ExceptionCheck, &f.ReviewStatus, &f.ReviewReasoning, &scanID, &fingerprint, &f.CreatedAt); err != nil {
-			return nil, fmt.Errorf("db: scan finding: %w", err)
-		}
-		f.ScanID = scanID.String
-		f.Fingerprint = fingerprint.String
-		f.VulnType = vulnType.String
-		findings = append(findings, f)
+func scanFindingRow(rows *sql.Rows) (*Finding, error) {
+	f := &Finding{}
+	var scanID, fingerprint, vulnType sql.NullString
+	if err := rows.Scan(&f.ID, &f.RuleID, &vulnType, &f.Severity, &f.Confidence, &f.Evidence, &f.Status, &f.FilePath, &f.LineNumber, &f.FunctionName, &f.Variable, &f.Properties, &f.Summary, &f.Reasoning, &f.FixStrategy, &f.ExceptionCheck, &f.ReviewStatus, &f.ReviewReasoning, &scanID, &fingerprint, &f.CreatedAt); err != nil {
+		return nil, fmt.Errorf("db: scan finding: %w", err)
 	}
-	return findings, rows.Err()
+	f.ScanID = scanID.String
+	f.Fingerprint = fingerprint.String
+	f.VulnType = vulnType.String
+	return f, nil
 }
 
 func (s *store) GetFindingByID(ctx context.Context, id int64) (*Finding, error) {
@@ -313,10 +307,9 @@ func (s *store) listAutoConfirmed(ctx context.Context, scanID string, ruleIDs []
 		sb.WriteString(` LIMIT ?`)
 		args = append(args, limit)
 	}
-	rows, err := s.exec.QueryContext(ctx, sb.String(), args...)
+	findings, err := queryList(ctx, s.exec, sb.String(), args, scanFindingRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list auto-confirmed for review: %w", err)
 	}
-	defer rows.Close()
-	return scanFindings(rows)
+	return findings, nil
 }

@@ -33,21 +33,19 @@ func (s *store) InsertScanStat(ctx context.Context, stat *ScanStat) (int64, erro
 }
 
 func (s *store) ListScanStats(ctx context.Context, scanID string) ([]*ScanStat, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, scan_id, vuln_type, seed_count, final_count, filter_chain, ai_stage_status, created_at FROM scan_stats WHERE scan_id = ? ORDER BY vuln_type`, scanID)
+	stats, err := queryList(ctx, s.exec,
+		`SELECT id, scan_id, vuln_type, seed_count, final_count, filter_chain, ai_stage_status, created_at FROM scan_stats WHERE scan_id = ? ORDER BY vuln_type`, []interface{}{scanID},
+		func(rows *sql.Rows) (*ScanStat, error) {
+			st := &ScanStat{}
+			if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.SeedCount, &st.FinalCount, &st.FilterChain, &st.AIStageStatus, &st.CreatedAt); err != nil {
+				return nil, err
+			}
+			return st, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list scan_stats: %w", err)
 	}
-	defer rows.Close()
-	var stats []*ScanStat
-	for rows.Next() {
-		st := &ScanStat{}
-		if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.SeedCount, &st.FinalCount, &st.FilterChain, &st.AIStageStatus, &st.CreatedAt); err != nil {
-			return nil, fmt.Errorf("db: scan scan_stat: %w", err)
-		}
-		stats = append(stats, st)
-	}
-	return stats, rows.Err()
+	return stats, nil
 }
 
 func (s *store) GetLatestScanID(ctx context.Context) (string, error) {
@@ -80,13 +78,12 @@ func (s *store) CountFindingsByScanAndStatus(ctx context.Context, scanID, status
 }
 
 func (s *store) ListFindingsByScanID(ctx context.Context, scanID string) ([]*Finding, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE scan_id = ? ORDER BY id`, scanID)
+	findings, err := queryList(ctx, s.exec,
+		`SELECT id, rule_id, vuln_type, severity, confidence, evidence, status, file_path, line_number, function_name, variable, properties, summary, reasoning, fix_strategy, exception_check, review_status, review_reasoning, scan_id, fingerprint, created_at FROM findings WHERE scan_id = ? ORDER BY id`, []interface{}{scanID}, scanFindingRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list findings by scan_id: %w", err)
 	}
-	defer rows.Close()
-	return scanFindings(rows)
+	return findings, nil
 }
 
 // ListPerTypeStatus returns the per-vulnerability-type progress for a scan, the

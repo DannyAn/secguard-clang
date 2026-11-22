@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -32,30 +33,25 @@ func (s *store) replaceFuncPtrWrites(ctx context.Context, writes []FuncPtrWrite)
 
 // ListFuncPtrWrites returns every function-pointer slot -> target wiring.
 func (s *store) ListFuncPtrWrites(ctx context.Context) ([]FuncPtrWrite, error) {
-	rows, err := s.exec.QueryContext(ctx,
-		`SELECT id, slot_name, type_name, target_name, file, line FROM func_ptr_writes`)
+	out, err := queryList(ctx, s.exec,
+		`SELECT id, slot_name, type_name, target_name, file, line FROM func_ptr_writes`, nil,
+		func(rows *sql.Rows) (FuncPtrWrite, error) {
+			var w FuncPtrWrite
+			var typeName *string
+			var file *string
+			if err := rows.Scan(&w.ID, &w.SlotName, &typeName, &w.TargetName, &file, &w.Line); err != nil {
+				return FuncPtrWrite{}, err
+			}
+			if typeName != nil {
+				w.TypeName = *typeName
+			}
+			if file != nil {
+				w.File = *file
+			}
+			return w, nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("db: list func ptr writes: %w", err)
-	}
-	defer rows.Close()
-	var out []FuncPtrWrite
-	for rows.Next() {
-		var w FuncPtrWrite
-		var typeName *string
-		var file *string
-		if err := rows.Scan(&w.ID, &w.SlotName, &typeName, &w.TargetName, &file, &w.Line); err != nil {
-			return nil, fmt.Errorf("db: scan func ptr write: %w", err)
-		}
-		if typeName != nil {
-			w.TypeName = *typeName
-		}
-		if file != nil {
-			w.File = *file
-		}
-		out = append(out, w)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("db: func ptr writes rows: %w", err)
 	}
 	return out, nil
 }

@@ -298,14 +298,13 @@ func (s *store) IncrementSettlementRetry(ctx context.Context, scanID, vulnType, 
 }
 
 func (s *store) ListSettlementStatsByScan(ctx context.Context, scanID string) ([]*SettlementStat, error) {
-	rows, err := s.exec.QueryContext(ctx,
+	stats, err := queryList(ctx, s.exec,
 		`SELECT id, scan_id, vuln_type, range_str, subagent_id, written, dismissed, evidence_opens, source_reads, repo_greps, needs_context, status, retry_count, wall_ms, queue_ms, work_ms, finished_at, created_at, heartbeat_at
-		 FROM settlement_stats WHERE scan_id = ? ORDER BY vuln_type, range_str, subagent_id`, scanID)
+		 FROM settlement_stats WHERE scan_id = ? ORDER BY vuln_type, range_str, subagent_id`, []interface{}{scanID}, scanSettlementStatRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list settlement stats by scan: %w", err)
 	}
-	defer rows.Close()
-	return scanSettlementStats(rows)
+	return stats, nil
 }
 
 func (s *store) ListSettlementStatsByType(ctx context.Context, vulnType string, limit int) ([]*SettlementStat, error) {
@@ -316,30 +315,25 @@ func (s *store) ListSettlementStatsByType(ctx context.Context, vulnType string, 
 		query += ` LIMIT ?`
 		args = append(args, limit)
 	}
-	rows, err := s.exec.QueryContext(ctx, query, args...)
+	stats, err := queryList(ctx, s.exec, query, args, scanSettlementStatRow)
 	if err != nil {
 		return nil, fmt.Errorf("db: list settlement stats by type: %w", err)
 	}
-	defer rows.Close()
-	return scanSettlementStats(rows)
+	return stats, nil
 }
 
-func scanSettlementStats(rows *sql.Rows) ([]*SettlementStat, error) {
-	var out []*SettlementStat
-	for rows.Next() {
-		st := &SettlementStat{}
-		var wallMS, queueMS, workMS, finishedAt, heartbeatAt sql.NullInt64
-		if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.RangeStr, &st.SubagentID,
-			&st.Written, &st.Dismissed, &st.EvidenceOpens, &st.SourceReads, &st.RepoGreps,
-			&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &finishedAt, &st.CreatedAt, &heartbeatAt); err != nil {
-			return nil, fmt.Errorf("db: scan settlement stat: %w", err)
-		}
-		st.WallMS = wallMS.Int64
-		st.QueueMS = queueMS.Int64
-		st.WorkMS = workMS.Int64
-		st.FinishedAt = finishedAt.Int64
-		st.HeartbeatAt = heartbeatAt.Int64
-		out = append(out, st)
+func scanSettlementStatRow(rows *sql.Rows) (*SettlementStat, error) {
+	st := &SettlementStat{}
+	var wallMS, queueMS, workMS, finishedAt, heartbeatAt sql.NullInt64
+	if err := rows.Scan(&st.ID, &st.ScanID, &st.VulnType, &st.RangeStr, &st.SubagentID,
+		&st.Written, &st.Dismissed, &st.EvidenceOpens, &st.SourceReads, &st.RepoGreps,
+		&st.NeedsContext, &st.Status, &st.RetryCount, &wallMS, &queueMS, &workMS, &finishedAt, &st.CreatedAt, &heartbeatAt); err != nil {
+		return nil, fmt.Errorf("db: scan settlement stat: %w", err)
 	}
-	return out, rows.Err()
+	st.WallMS = wallMS.Int64
+	st.QueueMS = queueMS.Int64
+	st.WorkMS = workMS.Int64
+	st.FinishedAt = finishedAt.Int64
+	st.HeartbeatAt = heartbeatAt.Int64
+	return st, nil
 }
