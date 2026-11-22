@@ -1,0 +1,14 @@
+{
+  "review_count": 2,
+  "reviewed": [
+    {
+      "id": 2,
+      "review_status": "confirmed"
+    },
+    {
+      "id": 3,
+      "review_status": "dismissed"
+    }
+  ],
+  "status": "ok"
+}

@@ -1,0 +1,7 @@
+{
+  "id": 2,
+  "per_finding_action": "written",
+  "per_finding_path": "<ROOT>/.codeagent/secguard-clang/scans/sc_2026-11-22_010000_abcdef/findings/buffer-overflow/001_src_a_c_9_confirmed.md",
+  "review_status": "confirmed",
+  "status": "ok"
+}

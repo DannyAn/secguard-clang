@@ -1,0 +1,9 @@
+{
+  "duplicate": false,
+  "id": 6,
+  "per_finding_action": "written",
+  "per_finding_path": "<ROOT>/.codeagent/secguard-clang/scans/sc_2026-11-22_010000_abcdef/findings/null-deref/001_src_a_c_19_confirmed.md",
+  "scan_id": "sc_2026-11-22_010000_abcdef",
+  "scan_id_source": "explicit",
+  "status": "ok"
+}

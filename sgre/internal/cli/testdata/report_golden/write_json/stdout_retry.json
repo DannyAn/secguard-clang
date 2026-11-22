@@ -1,0 +1,25 @@
+{
+  "dismissed_failed": 0,
+  "dismissed_persisted": 1,
+  "dismissed_written": 1,
+  "duplicates": 2,
+  "failed_count": 0,
+  "findings_written": 2,
+  "scan_id": "sc_2026-11-22_010000_abcdef",
+  "skipped_dismissed": 1,
+  "status": "ok",
+  "written": [
+    {
+      "duplicate": true,
+      "file": "src/a.c",
+      "id": 6,
+      "line": 19
+    },
+    {
+      "duplicate": true,
+      "file": "src/b.c",
+      "id": 7,
+      "line": 3
+    }
+  ]
+}
