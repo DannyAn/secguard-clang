@@ -287,13 +287,41 @@ func localVarDecls(decls []parser.Node) map[string][]varDecl {
 	return m
 }
 
+// stackUninitFacts is the "collect" phase output: the variables the function
+// declares without an initializer, every write site those variables receive,
+// and the output-parameter/macro lines after which a write is trusted.
+type stackUninitFacts struct {
+	uninitVars           map[string]bool
+	assignSites          map[string][]int
+	declsByName          map[string][]varDecl
+	outputParamInitLines map[string]int
+}
+
+// stackUninitFlow is the "compute" phase output: the statement CFG and the
+// loop-carried lazy-initialization facts that decide whether a read is
+// dominated by a write.
+type stackUninitFlow struct {
+	cfg      *graph.StmtCFG
+	lease    *graph.CFGLease
+	cfgValid bool
+	loopInit map[string]loopCarriedInit
+}
+
 func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, in *uninitScanInputs) {
-	f, file, bound := in.f, in.file, in.bound
+	facts := d.collectStackUninitFacts(in)
+	flow := d.computeStackUninitFlow(ctx, in, &facts)
+	if flow.lease != nil {
+		defer flow.lease.Release()
+	}
+	d.emitStackUninitUses(ctx, in, &facts, &flow)
+}
+
+func (d *UninitVariableDetector) collectStackUninitFacts(in *uninitScanInputs) stackUninitFacts {
+	f := in.f
 	decls, assigns, calls, exprStmts := in.decls, in.assigns, in.calls, in.exprStmts
-	returns, inits, ifs, whiles, fors, asms := in.returns, in.inits, in.ifs, in.whiles, in.fors, in.asms
-	bodies, summaries := in.bodies, in.summaries
-	macroWrites, objectMacroWrites := in.macroWrites, in.objectMacroWrites
-	result, tree := in.result, in.tree
+	ifs, asms := in.ifs, in.asms
+	summaries, macroWrites, objectMacroWrites := in.summaries, in.macroWrites, in.objectMacroWrites
+	bound := in.bound
 	uninitVars := make(map[string]bool)
 	assignSites := make(map[string][]int)
 	declsByName := make(map[string][]varDecl)
@@ -659,6 +687,20 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, in *unin
 		}
 	}
 
+	return stackUninitFacts{
+		uninitVars:           uninitVars,
+		assignSites:          assignSites,
+		declsByName:          declsByName,
+		outputParamInitLines: outputParamInitLines,
+	}
+}
+
+func (d *UninitVariableDetector) computeStackUninitFlow(ctx context.Context, in *uninitScanInputs, facts *stackUninitFacts) stackUninitFlow {
+	f := in.f
+	decls, assigns := in.decls, in.assigns
+	whiles, fors := in.whiles, in.fors
+	bodies, tree := in.bodies, in.tree
+	declsByName, uninitVars := facts.declsByName, facts.uninitVars
 	body := bodies[f.StartLine]
 	cfg, lease := buildStmtCFGFromCtx(ctx, f, body, tree)
 	if lease != nil {
@@ -706,6 +748,19 @@ func (d *UninitVariableDetector) detectStackUninit(ctx context.Context, in *unin
 		}
 	}
 
+	return stackUninitFlow{cfg: cfg, lease: lease, cfgValid: cfgValid, loopInit: loopInit}
+}
+
+func (d *UninitVariableDetector) emitStackUninitUses(ctx context.Context, in *uninitScanInputs, facts *stackUninitFacts, flow *stackUninitFlow) {
+	f, file, bound := in.f, in.file, in.bound
+	calls, assigns, inits := in.calls, in.assigns, in.inits
+	returns, ifs, whiles, fors := in.returns, in.ifs, in.whiles, in.fors
+	macroWrites := in.macroWrites
+	result := in.result
+	declsByName, uninitVars := facts.declsByName, facts.uninitVars
+	outputParamInitLines, assignSites := facts.outputParamInitLines, facts.assignSites
+	cfg, cfgValid, loopInit := flow.cfg, flow.cfgValid, flow.loopInit
+	isValue := func(name string) bool { return bound[name] }
 	checkUse := func(useLine, useColumn int, name string) {
 		if parser.IsCTypeKeyword(name) {
 			return
