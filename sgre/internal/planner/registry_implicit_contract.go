@@ -12,7 +12,6 @@ func init() {
 		SeedEventType:     "CONTRACT_GAP",
 		EvidenceType:      "IMPLICIT_CONTRACT",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "implicit-contract",
 		FilterFactories:   chainImplicitContract(),
 		BuildVerdictFacts: buildImplicitContractVerdictFacts,
 		Categories:        []string{"ptr_guard"},

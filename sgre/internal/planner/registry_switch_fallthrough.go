@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:    "SWITCH_FLOW",
 		EvidenceType:     "SWITCH_FLOW",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
 		FilterFactories:  chainDefault(),
 		// Both shapes are heuristics, never auto-confirmed: an intentional
 		// fallthrough and a deliberately-open enum switch are common idioms that

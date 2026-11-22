@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "RACE_CONDITION",
 		EvidenceType:      "RACE_CONDITION",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "race-condition",
 		FilterFactories:   chainRaceCondition(),
 		BuildVerdictFacts: buildRaceConditionVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

@@ -10,7 +10,6 @@ func init() {
 		SeedEventType:     "CRYPTO_MISUSE",
 		EvidenceType:      "CRYPTO_MISUSE",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "default",
 		FilterFactories:   chainDefault(),
 		BuildVerdictFacts: buildCryptoMisuseVerdictFacts,
 		// weak_algorithm (DES/MD5/SHA1/RC4), weak_random (rand/srand) and

@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "ARGUMENT_TYPE_MISMATCH",
 		EvidenceType:      "ARGUMENT_TYPE_MISMATCH",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "default",
 		FilterFactories:   chainDefault(),
 		BuildVerdictFacts: buildArgumentTypeVerdictFacts,
 		// An incompatible pointer cast is evidence of a type reinterpretation,

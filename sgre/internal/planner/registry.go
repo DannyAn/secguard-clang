@@ -13,12 +13,9 @@ type VulnTypeSpec struct {
 	SeedEventType    string
 	EvidenceType     string
 	DefaultSuspicion string
-	FilterChain      string
-	// FilterFactories declares this type's filter chain next to the rest of
-	// its metadata. When empty, Planner falls back to the legacy string-keyed
-	// switch via FilterChain; RegisterVulnType populates it from FilterChain
-	// if the caller did not set it explicitly, so new types can go declarative
-	// while existing types migrate one at a time.
+	// FilterFactories is this type's declarative filter chain, declared next
+	// to the rest of its metadata. RegisterVulnType requires it to be
+	// non-empty; there is no string-keyed fallback (see filter_chain.go).
 	FilterFactories []FilterFactory
 	// ConvergeByVariable collapses multiple candidates for the same
 	// (function, variable) into one. This is correct for variable-centric

@@ -19,7 +19,6 @@ func init() {
 		SeedEventType:    "INJECTION",
 		EvidenceType:     "INJECTION",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "injection",
 		FilterFactories:  chainTaint(),
 		// The taint-source filter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,

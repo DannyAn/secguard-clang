@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:    "FORMAT_STRING",
 		EvidenceType:     "FORMAT_STRING_VULN",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "format-string",
 		FilterFactories:  chainFormatString(),
 		// The taint-source filter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,

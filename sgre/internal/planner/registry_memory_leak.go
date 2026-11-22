@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "MEMORY_ALLOC",
 		EvidenceType:      "MEMORY_LEAK",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "memory-leak",
 		FilterFactories:   chainMemoryLeak(),
 		BuildVerdictFacts: buildLeakVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

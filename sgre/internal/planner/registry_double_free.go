@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "DOUBLE_FREE",
 		EvidenceType:      "DOUBLE_FREE",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "double-free",
 		FilterFactories:   chainDoubleFree(),
 		BuildVerdictFacts: buildDoubleFreeVerdictFacts,
 		// One variable freed twice is one defect, not one per (first,second) pair.

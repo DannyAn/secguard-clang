@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:    "DANGEROUS_FUNCTION",
 		EvidenceType:     "DANGEROUS_FUNCTION",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
 		FilterFactories:  chainDefault(),
 		// A banned-function call is a POLICY finding, not a machine-proved
 		// defect: whether the banned function is actually UNSAFE in context

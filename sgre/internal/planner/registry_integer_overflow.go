@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:    "INTEGER_OVERFLOW",
 		EvidenceType:     "INTEGER_OVERFLOW",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "integer-overflow",
 		FilterFactories:  chainIntegerOverflow(),
 		// IntOverflowGuardFilter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,

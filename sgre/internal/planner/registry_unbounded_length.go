@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:    "UNBOUNDED_LENGTH",
 		EvidenceType:     "UNBOUNDED_LENGTH",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
 		FilterFactories:  chainDefault(),
 		// The trust boundary (is the length attacker-controlled?) is a semantic
 		// judgment the machine cannot prove, so every shape stays suspected.

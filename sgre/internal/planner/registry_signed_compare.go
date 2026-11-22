@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:    "SIGNED_COMPARE",
 		EvidenceType:     "SIGNED_COMPARE",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
 		FilterFactories:  chainDefault(),
 		Categories:       []string{"signed_compare"},
 		// The detector only emits when the compared variable's declared type is

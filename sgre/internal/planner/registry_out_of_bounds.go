@@ -12,7 +12,6 @@ func init() {
 		SeedEventType:     "BUFFER_ACCESS",
 		EvidenceType:      "OUT_OF_BOUNDS",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "buffer-overflow",
 		FilterFactories:   chainBufferOverflow(),
 		BuildVerdictFacts: buildBufferVerdictFacts,
 		// The unchecked-external-index read family (a fixed-size array read

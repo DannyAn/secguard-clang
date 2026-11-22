@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "DEADLOCK",
 		EvidenceType:      "DEADLOCK",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "deadlock",
 		FilterFactories:   chainDeadlock(),
 		BuildVerdictFacts: buildDeadlockVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

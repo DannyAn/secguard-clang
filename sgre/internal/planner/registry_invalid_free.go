@@ -10,7 +10,6 @@ func init() {
 		SeedEventType:    "INVALID_FREE",
 		EvidenceType:     "INVALID_FREE",
 		DefaultSuspicion: "confirmed",
-		FilterChain:      "default",
 		FilterFactories:  chainDefault(),
 		// Every shape is AST/alias-proved: the deallocator argument is a stack
 		// object, a global array, or an interior pointer whose base is proven

@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "DATA_REPRESENTATION_MISMATCH",
 		EvidenceType:      "DATA_REPRESENTATION_MISMATCH",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "default",
 		FilterFactories:   chainDefault(),
 		BuildVerdictFacts: buildDataRepVerdictFacts,
 		// A pointer-depth mismatch between a qsort/bsearch base element and the

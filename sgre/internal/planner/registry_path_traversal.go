@@ -13,7 +13,6 @@ func init() {
 		SeedEventType:    "PATH_TRAVERSAL",
 		EvidenceType:     "PATH_TRAVERSAL",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "path-traversal",
 		FilterFactories:  chainPathTraversal(),
 		// The taint-source filter reads the scan-shared interprocedural summary.
 		SharedTaintSummary: true,
