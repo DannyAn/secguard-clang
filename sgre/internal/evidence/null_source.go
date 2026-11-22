@@ -282,7 +282,10 @@ func staticGlobalMacroWrites(root parser.Node, globals map[string]int) map[strin
 	return out
 }
 
-// macroAssignsName matches `name =` (but not `name ==`) in a macro body.
+// macroAssignsName matches `name =` (but not `name ==`) in a macro body. The
+// name must be a standalone identifier: `prefix_x = 1` does not assign x, so a
+// macro that writes a similarly-spelled variable must not suppress x's null
+// source.
 func macroAssignsName(text, name string) bool {
 	idx := 0
 	for {
@@ -291,6 +294,14 @@ func macroAssignsName(text, name string) bool {
 			return false
 		}
 		pos := idx + i
+		if pos > 0 && isIdentByte(text[pos-1]) {
+			idx = pos + len(name)
+			continue
+		}
+		if end := pos + len(name); end < len(text) && isIdentByte(text[end]) {
+			idx = end
+			continue
+		}
 		rest := text[pos+len(name):]
 		trimmed := strings.TrimLeft(rest, " \t")
 		if strings.HasPrefix(trimmed, "=") && !strings.HasPrefix(trimmed, "==") {
