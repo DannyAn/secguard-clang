@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "SIZEOF_MISUSE",
 		EvidenceType:      "SIZEOF_MISUSE",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "default",
 		FilterFactories:   chainDefault(),
 		BuildVerdictFacts: buildSizeofMisuseVerdictFacts,
 		Categories:        []string{"sizeof_pointer", "sizeof_pointer_ambig"},

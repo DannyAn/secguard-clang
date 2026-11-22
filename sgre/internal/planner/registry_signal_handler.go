@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "SIGNAL_HANDLER",
 		EvidenceType:      "SIGNAL_HANDLER",
 		DefaultSuspicion:  "confirmed",
-		FilterChain:       "default",
 		FilterFactories:   chainDefault(),
 		BuildVerdictFacts: buildSignalHandlerVerdictFacts,
 		// A signal handler that DIRECTLY calls a known non-async-signal-safe libc

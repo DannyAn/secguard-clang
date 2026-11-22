@@ -12,7 +12,6 @@ func init() {
 		SeedEventType:     "VALUE_USE",
 		EvidenceType:      "UNINIT_USE",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "uninit",
 		FilterFactories:   chainUninit(),
 		BuildVerdictFacts: buildUninitVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

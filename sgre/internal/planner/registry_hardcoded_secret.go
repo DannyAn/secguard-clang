@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "HARDCODED_SECRET",
 		EvidenceType:      "HARDCODED_SECRET",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "hardcoded-secret",
 		FilterFactories:   chainHardcodedSecret(),
 		BuildVerdictFacts: buildHardcodedSecretVerdictFacts,
 		// A literal whose VALUE is secret-shaped (a known token prefix, high

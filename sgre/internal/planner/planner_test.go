@@ -348,10 +348,10 @@ func TestPlan_UncheckedReturn_UsesReturnCheckFilter(t *testing.T) {
 	}
 }
 
-// TestAllVulnTypesHaveKnownFilterChain guards against a typo'd or newly-added
-// FilterChain silently falling back to the default call-reach chain: getFilters
-// now returns an error for any chain it does not recognise, so this test fails
-// the moment a registered type references an unknown chain.
+// TestAllVulnTypesHaveKnownFilterChain guards that every registered type
+// carries a declarative FilterFactories chain that builds without error.
+// RegisterVulnType panics on an empty chain, so this test fails as soon as a
+// type is registered without declaring one.
 func TestAllVulnTypesHaveKnownFilterChain(t *testing.T) {
 	if err := ValidateRegistry(); err != nil {
 		t.Errorf("registry validation failed: %v", err)

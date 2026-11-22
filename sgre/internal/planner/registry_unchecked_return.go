@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:     "UNCHECKED_RETURN",
 		EvidenceType:      "UNCHECKED_RETURN",
 		DefaultSuspicion:  "suspected",
-		FilterChain:       "unchecked-return",
 		FilterFactories:   chainUncheckedReturn(),
 		BuildVerdictFacts: buildUncheckedReturnVerdictFacts,
 		BuildEvidence: func(c Candidate) []EvidenceFragment {

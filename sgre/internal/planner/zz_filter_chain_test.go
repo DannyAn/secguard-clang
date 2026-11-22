@@ -9,12 +9,9 @@ import (
 )
 
 // TestFilterChainMigration pins the Phase-7 migration contract: every
-// registered vuln type exposes a non-empty FilterFactories after
-// RegisterVulnType (either declared explicitly by the type or populated from
-// FilterChain by the bridge). The ORDER of the factories must match the
-// legacy switch's semantics — filter order is part of the pipeline contract
-// (earlier filters drop cheap non-candidates before the expensive flow /
-// interval filters run).
+// registered vuln type declares a non-empty FilterFactories chain. The ORDER
+// of the factories is part of the pipeline contract — earlier filters drop
+// cheap non-candidates before the expensive flow / interval filters run.
 func TestFilterChainMigration(t *testing.T) {
 	expectedOrder := map[string][]string{
 		"null-deref":        {"sizeof_pseudo_deref", "non_nullable_array_suppress", "array_oob_precedence", "nullable_source", "macro_uncertain", "call_reach", "safe_function_exclude"},

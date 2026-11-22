@@ -14,6 +14,31 @@ import (
 	"github.com/DannyAn/secguard-clang/internal/parser"
 )
 
+// Taint propagation has two layers. The intra-procedural layer is a forward
+// may-taint dataflow over each body's statement CFG, using the same
+// reaching-sources engine as null-deref (null_flow.go): gen = a user-input
+// source (getenv/argv/scanf buffer/...), copy = a plain assignment or a
+// verbatim-parameter return, kill = a provably-untainted assignment (literal,
+// address-of). A sink is dropped only when no source can reach it.
+//
+// The inter-procedural layer is three monotone fixpoints over the call graph,
+// run once per scan and shared by injection / path-traversal / format-string:
+//
+//  1. returnsParam: does f return its i-th parameter verbatim (`return p`)?
+//     Solved bottom-up (base case, then transitively through callees that
+//     return their own parameter), so a multi-level passthrough is a copy.
+//  2. retTainted: can f return a tainted value? A worklist starts from
+//     functions with a direct source return and re-examines only callers when
+//     a callee becomes tainted; every `x = g(...)` with g retTainted is a gen.
+//  3. paramTainted: which parameters receive taint from a caller? Grown
+//     top-down from tainted actual arguments + externally callable functions,
+//     then used as entry seeds for the callee's may flow.
+//
+// The call-site census (`computeCallsiteSummary`) supplies the caller-side
+// argument facts that the PARAM_BINDING/DFG edges cannot express for literal
+// arguments. Each fixpoint is monotone (sets only grow), so it terminates; the
+// cache in taintSummaryCache computes them once per scan.
+//
 // taintSummary is the interprocedural taint summary shared across injection /
 // path-traversal / format-string. Its three parts — returnsParam, retTainted,
 // paramTainted — depend only on the graph layer (functions + RETURN/CALL/

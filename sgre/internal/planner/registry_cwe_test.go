@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -309,9 +310,18 @@ func TestRegistry_UncheckedReturnChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.FilterChain != "unchecked-return" {
-		t.Errorf("unchecked-return FilterChain = %q, want unchecked-return (uses ReturnCheckFilter for deterministic convergence)", spec.FilterChain)
+	filters, err := (&Planner{}).buildFilters(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("buildFilters: %v", err)
 	}
+	names := make([]string, 0, len(filters))
+	for _, f := range filters {
+		if f.Name() == "return_check" {
+			return
+		}
+		names = append(names, f.Name())
+	}
+	t.Errorf("unchecked-return chain lacks return_check, want ReturnCheckFilter for deterministic convergence (got %v)", names)
 }
 
 func TestRegistry_BufferOverflowFormatOverflowConfidence(t *testing.T) {

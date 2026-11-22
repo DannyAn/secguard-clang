@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:    "STACK_ESCAPE",
 		EvidenceType:     "STACK_ESCAPE",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "default",
 		FilterFactories:  chainDefault(),
 		// Returning the address of a non-static local (or a decayed local
 		// array) is AST-deterministic: the operand is provably in the returning

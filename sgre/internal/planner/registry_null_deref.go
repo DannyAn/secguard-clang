@@ -13,7 +13,6 @@ func init() {
 		SeedEventType:      "DEREFERENCE",
 		EvidenceType:       "NULL_DEREFERENCE",
 		DefaultSuspicion:   "confirmed",
-		FilterChain:        "null-deref",
 		FilterFactories:    chainNullDeref(),
 		ConvergeByVariable: true,
 		BuildVerdictFacts:  buildNullDerefVerdictFacts,

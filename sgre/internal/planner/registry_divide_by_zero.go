@@ -9,7 +9,6 @@ func init() {
 		SeedEventType:    "DIVIDE_BY_ZERO",
 		EvidenceType:     "DIVIDE_BY_ZERO",
 		DefaultSuspicion: "suspected",
-		FilterChain:      "divide-by-zero",
 		FilterFactories:  chainDivideByZero(),
 		Categories:       []string{"divide_by_zero", "int_min_div"},
 		CategoryCWEs:     map[string]string{"int_min_div": "CWE-190"},
