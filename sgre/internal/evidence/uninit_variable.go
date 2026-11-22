@@ -1534,6 +1534,8 @@ func (h *heapUninitFacts) resolve(name string, line int) string {
 	return resolveVarKey(h.mallocDeclsByName, name, line)
 }
 
+// scopedPath replaces the bare base in a full access text with the scoped key
+// so `p->f` on the `p` malloc'd at line L becomes `p@L->f`.
 func (h *heapUninitFacts) scopedPath(key, bareBase, full string) string {
 	if !strings.HasPrefix(full, bareBase) {
 		return full
@@ -2102,11 +2104,42 @@ func unionTypedefNames(root parser.Node) map[string]bool {
 	return out
 }
 
+// structPartialFacts bundles the "collect" declarations and the "compute"
+// write-path state the struct-partial-uninit reads are judged against.
+type structPartialFacts struct {
+	structVars        map[string]int
+	structDeclsByName map[string][]varDecl
+	initializedFields map[string]bool
+	unionVars         map[string]bool
+	unionInitialized  map[string]bool
+	wholeAssigned     map[string]bool
+	writePaths        map[string]bool
+	initializedVars   map[string]bool
+	initializedFrom   map[string]int
+}
+
+func (s *structPartialFacts) resolve(name string, line int) string {
+	return resolveVarKey(s.structDeclsByName, name, line)
+}
+
+func (s *structPartialFacts) scopedPath(key, bareBase, full string) string {
+	if !strings.HasPrefix(full, bareBase) {
+		return full
+	}
+	return key + full[len(bareBase):]
+}
+
 func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, in *uninitScanInputs) {
-	f, file, bound := in.f, in.file, in.bound
-	decls, assigns, calls, ifs, fields := in.decls, in.assigns, in.calls, in.ifs, in.fields
-	summaries, macroWrites, unionTypedefs := in.summaries, in.macroWrites, in.unionTypedefs
-	result := in.result
+	facts := d.collectStructPartialFacts(in)
+	d.computeStructPartialWrites(in, facts)
+	d.emitStructPartialUses(ctx, in, facts)
+}
+
+func (d *UninitVariableDetector) collectStructPartialFacts(in *uninitScanInputs) *structPartialFacts {
+	f, decls := in.f, in.decls
+	calls, ifs := in.calls, in.ifs
+	summaries, unionTypedefs := in.summaries, in.unionTypedefs
+	bound := in.bound
 	// Scope-aware tracking (UN-04): structVars and every per-variable fact are
 	// keyed by varKey(name@declLine) so two `s` in nested blocks no longer collide.
 	structVars := make(map[string]int) // varKey -> decl line
@@ -2124,10 +2157,6 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 	// detectStackUninit): without it a genuine bit-and argument would be read as
 	// an address-of and mark a field as callee-initialized.
 	isValue := func(name string) bool { return bound[name] }
-	// A write inside a runtime branch initializes a field on only some paths, so
-	// it must not suppress a later read here; the planner drops the read only when
-	// the write covers every path (UN-06).
-	uncond := func(n parser.Node) bool { return !isConditionalNode(n) }
 	// A struct passed by address to a KNOWN initializer (memset(&s, 0, ...),
 	// or an output-param filler) — or to a local function that writes the
 	// pointer parameter on every path — has its fields written by the callee,
@@ -2172,16 +2201,34 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		}
 	}
 
-	resolve := func(name string, line int) string {
-		return resolveVarKey(structDeclsByName, name, line)
+	return &structPartialFacts{
+		structVars:        structVars,
+		structDeclsByName: structDeclsByName,
+		initializedFields: initializedFields,
+		unionVars:         unionVars,
+		unionInitialized:  unionInitialized,
+		initializedVars:   initializedVars,
+		initializedFrom:   initializedFrom,
 	}
-	scopedPath := func(key, bareBase, full string) string {
-		if !strings.HasPrefix(full, bareBase) {
-			return full
-		}
-		return key + full[len(bareBase):]
-	}
+}
 
+func (d *UninitVariableDetector) computeStructPartialWrites(in *uninitScanInputs, facts *structPartialFacts) {
+	f := in.f
+	assigns, calls := in.assigns, in.calls
+	macroWrites := in.macroWrites
+	bound := in.bound
+	structVars := facts.structVars
+	initializedFields := facts.initializedFields
+	unionVars := facts.unionVars
+	unionInitialized := facts.unionInitialized
+	initializedVars := facts.initializedVars
+	isValue := func(name string) bool { return bound[name] }
+	// A write inside a runtime branch initializes a field on only some paths, so
+	// it must not suppress a later read here; the planner drops the read only when
+	// the write covers every path (UN-06).
+	uncond := func(n parser.Node) bool { return !isConditionalNode(n) }
+	resolve := facts.resolve
+	scopedPath := facts.scopedPath
 	// A struct assigned as a whole (`s = other`) is fully initialized, so none
 	// of its fields can be a partial-init defect.
 	wholeAssigned := make(map[string]bool)
@@ -2333,6 +2380,20 @@ func (d *UninitVariableDetector) detectStructPartialUninit(ctx context.Context, 
 		}
 	}
 
+	facts.wholeAssigned = wholeAssigned
+	facts.writePaths = writePaths
+}
+
+func (d *UninitVariableDetector) emitStructPartialUses(ctx context.Context, in *uninitScanInputs, facts *structPartialFacts) {
+	f, file := in.f, in.file
+	fields := in.fields
+	result := in.result
+	structVars, initializedFields := facts.structVars, facts.initializedFields
+	unionInitialized, wholeAssigned := facts.unionInitialized, facts.wholeAssigned
+	writePaths := facts.writePaths
+	initializedVars, initializedFrom := facts.initializedVars, facts.initializedFrom
+	resolve := facts.resolve
+	scopedPath := facts.scopedPath
 	for _, field := range fields {
 		if !funcLineRange(f, field.StartLine()) {
 			continue
