@@ -15,7 +15,7 @@
 >
 > **复核修正**：初版报告把 Crapper / Dryer / Mutator 记为“未安装”，这是错误的——三者一直在 `~/.local/bin`，现在已用于复核；初版的复杂度/CRAP/重复率结论已按工具输出修正，并新增了静态检查、变异测试与系统性重复的证据。详细修正见 §3.7。
 >
-> **阶段二执行状态（2026-11-21）**：PR #309–#316 已合入 main（`0b515dc`）。U1/U2/U1b/U3a/U3b/U4a/U4c/U5/U7a(参数层)/U4d/U6/U4b 完成；U3a 达 uncapped golangci **0 findings**。M-07 部分完成：chunked `List*ByIDs` + `queryList` 统一 15 个 List 函数（`8c07955`、`94b188f`）；剩余 24 处 scan/CRUD 循环与 Dryer 大块。剩余 U7b、M-12、L-03/L-04、U7a 函数体拆分见 §9/§10。§6 L-01 保留审计时的清单描述。
+> **阶段二执行状态（2026-11-21）**：PR #309–#316 已合入 main（`0b515dc`）。U1/U2/U1b/U3a/U3b/U4a/U4c/U5/U7a(参数层)/U4d/U6/U4b 完成；U3a 达 uncapped golangci **0 findings**。M-07 部分完成：chunked `List*ByIDs` + `queryList` 统一 15 个 List 函数（`8c07955`、`94b188f`）；剩余 24 处 scan/CRUD 循环与 Dryer 大块。剩余 U7b、U7a 函数体拆分见 §9/§10。§6 L-01 保留审计时的清单描述。**2026-11-22 补充**：L-03/L-04 完成（stage benchmark 基线见 §9.1；`db_test` CWE parity）；M-12 完成量化——detector 阶段读 I/O 占 **1.65%**（上界），判定不显著，未加缓存。
 
 ---
 
@@ -626,10 +626,47 @@ go build -buildvcs=false -o /tmp/audit-tools/secguard ./cmd/secguard
 | U6 中型去重 | 完成 | `buildRangeFlowsForCandidates`、`collectFileScope`、`classifyUnsignedCompare`、`firstFormatTaintArg`、`scanUsageTargets` |
 | M-07 DB 模板去重 | 部分完成 | `listByIDs` 统一 4 个 chunked `List*ByIDs`（`5e896ac`）；`queryList` 统一 15 个 List 函数（`8c07955`、`94b188f`）；其余 24 处 scan/CRUD 循环未做 |
 | U7b runReportCmd 拆分 | 未完成 | 1,472 行、10 个模式；需先建 golden 输出，属独立大型 PR |
-| M-12 源文件重复读取 | 未完成 | 需在大语料量化 I/O 后再决定缓存方案 |
-| L-03/L-04 基准与 CWE parity | 未完成 | 0 个 Benchmark；db 默认 CWE 集合仍需 parity 测试 |
+| M-12 源文件重复读取 | 完成（量化后不加缓存） | 250 文件 / 191,250 LOC 语料：detector 阶段 23,250 次 `os.ReadFile`、1,192 ms、365 MB（重复读取约 93 遍），占该阶段墙钟 72.0 s 的 **1.65%**（并发 syscall 耗时求和，是墙钟占比的上界）；未达显著阈值，按卡要求不加有界缓存（明细见 §9.1） |
+| L-03/L-04 基准与 CWE parity | 完成 | parser/indexer/graph（CFG/调用图/数据流）/detector/plan 的 `Benchmark*`（复用 `testdata/perf/large_codebase`，不进 CI 门禁）；`db_test` 外部测试包 3 个 CWE parity 测试；基线见 §9.1 |
 
 **验证基线（合入 main + M-07 queryList）**：`go build`/`go vet` 通过；`go test -count=1 ./...` 全通过；nosqlite 子集通过；`staticcheck` **0 findings**；`gofmt -l` **0**；基准召回 **132/132、FP 0、FN 0、193 候选、40 SARIF findings、263 passed**；默认扫描 **185 候选、40 自动确认、SARIF 2.1.0/185 results/28 ruleId**。历史 #309–#316 已合入 main `0b515dc`；当前分支新增 `queryList` `8c07955`。
+
+### 9.1 L-03 性能基线（2026-11-22）
+
+`Benchmark*` 只用于记录与比较阶段成本，**不进入 CI 门禁**：`go test ./...` 不运行 benchmark，只有显式 `-bench` 才执行。
+
+- 环境：Apple M1 Max / darwin arm64 / Go 1.25.3；单机噪声较大，跨机器只比较量级与趋势。
+- 语料：`sgre/testdata/perf/large_codebase`（100 文件 / 5,000 函数 / 2.0 MB，由 `testdata/perf/gen_codebase.go` 生成并入库）。
+- 命令（在 `sgre/` 下）：
+
+```bash
+go test -buildvcs=false -run '^$' -bench 'Benchmark' -benchtime=1x -benchmem \
+  ./internal/parser ./internal/indexer ./internal/graph ./internal/evidence ./internal/planner
+```
+
+| Benchmark | 基线 | 说明 |
+|---|---|---|
+| `parser.BenchmarkParseCorpus` | 1.01 s | 100 文件冷解析（源字节预读，只计解析成本） |
+| `parser.BenchmarkParseCachedCorpus` | 5.13 ms | 100 文件各命中一次 `ParseCached`（20× 平均） |
+| `indexer.BenchmarkIndexCorpus` | 1.95 s | 空库全量索引（含 SQLite 写入） |
+| `graph.BenchmarkBuildCallGraph` | 4.25 s | 空图构建 CALL 边 |
+| `graph.BenchmarkBuildDataFlow` | 3.59 s | 空图构建 DATA_FLOW 边 |
+| `graph.BenchmarkBuildStmtCFG` | 334 ms | 语料全部函数的语句级 CFG |
+| `evidence.BenchmarkRunAllDetectors` | 52.2 s | 全检测器一遍（含共享 CFG 缓存） |
+| `evidence.BenchmarkReadCorpus` | 2.37 ms | 语料一遍 `os.ReadFile`（M-12 的 I/O 单位） |
+| `planner.BenchmarkPlanAllTypes` | 8.36 s | 29 个类型顺序 `Plan()`（每轮 fresh Planner + taint 预热） |
+
+#### M-12 源文件 I/O 量化结论
+
+用 `gen_codebase.go` 生成 250 文件 / 191,250 LOC / 3.9 MB 语料，临时在 `scanwalk.Each` 与 evidence 的 7 处直接 `os.ReadFile` 调用点埋点（统计后已撤回），一次默认 scan 的 detector 阶段：
+
+| 读取路径 | 次数 | 耗时 | 字节 |
+|---|---|---|---|
+| `scanwalk.Each`（35+ 检测器遍历共享的读/解析循环） | 17,750 | 931 ms | 278.7 MB |
+| evidence 直接读取（全局 typedef/常量普查、interprocedural、free summary 等） | 5,500 | 261 ms | 86.4 MB |
+| 合计 | 23,250 | 1,192 ms | 365.0 MB |
+
+detector 阶段墙钟 72.0 s，读取耗时合计占 **1.65%**（并发检测器下 syscall 耗时求和，是墙钟占比的上界；250 个文件合计约 93 遍重复读取）。远低于“显著”阈值，因此按 M-12 卡的要求**不引入有界源字节缓存**：缓存最多只能消除这 1.65% 的上界，却要新增内存上限、与 parser 树 LRU/refcount 的借还生命周期交互，风险收益不成比例。
 
 
 ---
@@ -690,6 +727,8 @@ git cherry-pick 84c5909   # U3a: propagate free/race traversal errors; clear pro
 git cherry-pick 67b16c8   # U3a: check remaining test errors (uncapped lint 0)
 git cherry-pick 8c07955   # M-07: queryList rows lifecycle
 git cherry-pick 94b188f   # M-07: queryList for locations/expressions/graph lists
+git cherry-pick 2de5f57   # L-03: parser/index/graph/detector/plan benchmarks
+git cherry-pick 40f0320   # L-04: db_test CWE parity tests
 # 文档提交可按需 cherry-pick：ba05a99、faa51a6、0c3a331，或直接保留本报告
 ```
 
@@ -783,6 +822,8 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 | U3a 测试 errcheck 清零 | `67b16c8` | 127 处测试调用显式断言；uncapped golangci 0 | 全测试 + 基准 |
 | M-07 queryList | `8c07955` | 6 个 List 函数共享 rows 生命周期 | `go test ./internal/db` + 全测试 + 基准 |
 | M-07 queryList 扩展 | `94b188f` | 9 个 location/expression/graph List 函数 | `go test ./internal/db` + 全测试 + 基准 |
+| L-03 阶段基准 | `2de5f57` | parser/indexer/graph（CFG/调用图/数据流）/evidence（全检测器 + 一遍读）/planner（29 类型）共 9 个 Benchmark；基线写入 §9.1 | `go test -bench`（不进 CI） |
+| L-04 CWE parity | `40f0320` | `package db_test` 外部测试包：默认集合 ⊆ registry、CLI 注入后相等、每类型 canonical CWE 可写 | `go test ./internal/db` + nosqlite 子集 |
 
 回滚：每个单元可以用 `git revert <commit>` 或恢复该单元涉及的文件；已合入的提交都在 main 历史中，revert 后必须重跑 10.3 全部门禁。U1b 的 `parser.SetLanguage` 错误处理只在“语言版本不匹配”时改变行为，回滚时注意保留 error 语义。
 
@@ -802,15 +843,17 @@ rm -rf /tmp/quality-default && mkdir -p /tmp/quality-default/sc_2026-11-21_00000
 - **验收**：golden 逐字节/逐字段一致；`report --audit` 端到端；基准 SARIF 不变。
 - **风险**：DB 写入顺序、JSON 省略规则、SARIF 排序；这是独立大型 PR，不要与去重混在一起。
 
-#### M-12 源文件 I/O
+#### M-12 源文件 I/O（已完成）
 
 - **做法**：先在较大语料（`sgre/testdata/perf/gen_codebase.go` 生成）测量 detector 阶段 `os.ReadFile` 占比；若显著，再加有界源字节缓存（受 parser LRU/内存水位约束），不要先改。
 - **验收**：扫描耗时对比 + RSS；行为不变。
+- **结果（2026-11-22）**：250 文件 / 191,250 LOC 语料上，detector 阶段读取耗时合计 1,192 ms、墙钟 72.0 s，占比 **1.65%**（上界）；判定不显著，**未加缓存**。量化明细见 §9.1。
 
-#### L-03/L-04
+#### L-03/L-04（已完成）
 
 - L-03：为 index/graph/detector/plan 增加 `Benchmark*`，复用 `testdata/perf`；`go test -bench` 记录基线，不进入默认 CI。
 - L-04：在 `db_test`（外部测试包，可 import `planner`）加默认 CWE 集合与 `planner.AllCWEs()` 的 parity 测试；不要在生产代码硬编码第二份 CWE 表。
+- **结果（2026-11-22）**：`parser`（冷解析/缓存命中）、`indexer`、`graph`（调用图/数据流/语句 CFG）、`evidence`（全检测器 + 一遍读）、`planner`（29 类型）共 9 个 Benchmark，基线见 §9.1；`internal/db/cwe_parity_test.go`（`package db_test`）覆盖“默认集合 ⊆ registry”“CLI 注入后与 `planner.AllCWEs()` 相等”“每个类型的 canonical CWE 可写”三条 parity 不变量。
 
 ### 10.6 常见坑（回放时最容易踩）
 
