@@ -1506,11 +1506,68 @@ func isInIfRange(ifs []parser.Node, f *db.Function, line int) bool {
 	return false
 }
 
+// heapWriterEvidence records the earliest in-tree callee that writes a
+// malloc'd block only on some paths, and whose return the caller does not guard.
+type heapWriterEvidence struct {
+	line   int
+	callee string
+}
+
+// heapUninitFacts bundles the "collect" facts (tracked allocations and
+// interprocedural conditional writers) with the "compute" write-path state
+// that decides whether a heap read is uninitialized.
+type heapUninitFacts struct {
+	mallocVars        map[string]int
+	mallocAllocator   map[string]string
+	mallocDeclsByName map[string][]varDecl
+	conditionalWriter map[string]heapWriterEvidence
+	conditionalWhole  map[string]bool
+	conditionalFields map[string]bool
+	wholeInit         map[string]bool
+	initializedFields map[string]bool
+	contentInitFields map[string]bool
+	writePaths        map[string]bool
+	heapFieldWritten  map[string]bool
+}
+
+func (h *heapUninitFacts) resolve(name string, line int) string {
+	return resolveVarKey(h.mallocDeclsByName, name, line)
+}
+
+func (h *heapUninitFacts) scopedPath(key, bareBase, full string) string {
+	if !strings.HasPrefix(full, bareBase) {
+		return full
+	}
+	return key + full[len(bareBase):]
+}
+
+// heapInit returns the write-path fact for a heap read: a conditional
+// out-param writer that runs BEFORE the read is the evidence tier ("cond");
+// a conditional in-function write to the same target is a real may-skip
+// branch ("branch"); otherwise the weak "none" tier.
+func (h *heapUninitFacts) heapInit(key string, line int, path string, whole bool) (initWrite string, initLine int, writer string) {
+	if w, ok := h.conditionalWriter[key]; ok && w.line < line {
+		return "cond", w.line, w.callee
+	}
+	if whole && h.conditionalWhole[key] {
+		return "branch", 0, ""
+	}
+	if path != "" && h.conditionalFields[path] {
+		return "branch", 0, ""
+	}
+	return "none", 0, ""
+}
+
 func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, in *uninitScanInputs) {
-	f, file := in.f, in.file
+	facts := d.collectHeapUninitFacts(in)
+	d.computeHeapUninitWrites(in, facts)
+	d.emitHeapUninitUses(ctx, in, facts)
+}
+
+func (d *UninitVariableDetector) collectHeapUninitFacts(in *uninitScanInputs) *heapUninitFacts {
+	f := in.f
 	decls, inits, assigns, calls := in.decls, in.inits, in.assigns, in.calls
-	unarys, ptrs, fields, subscripts, ifs := in.unarys, in.ptrs, in.fields, in.subscripts, in.ifs
-	summaries, result := in.summaries, in.result
+	ifs, summaries := in.ifs, in.summaries
 	// Scope-aware tracking (UN-04): mallocVars and every per-variable fact are
 	// keyed by varKey(name@declLine) so two `p` in nested blocks no longer
 	// collide — the previous bare-name maps let one scope's whole-init hide the
@@ -1601,10 +1658,6 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, in *unini
 	// but a factory/memset may have initialized it) and is pre-dismissed by the
 	// planner's weak-tier filter. A GUARDED call is not evidence: the success
 	// continuation runs after the callee wrote the output.
-	type heapWriterEvidence struct {
-		line   int
-		callee string
-	}
 	conditionalWriter := map[string]heapWriterEvidence{}
 	if summaries != nil {
 		for _, call := range calls {
@@ -1640,6 +1693,21 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, in *unini
 			}
 		}
 	}
+
+	return &heapUninitFacts{
+		mallocVars:        mallocVars,
+		mallocAllocator:   mallocAllocator,
+		mallocDeclsByName: mallocDeclsByName,
+		conditionalWriter: conditionalWriter,
+	}
+}
+
+func (d *UninitVariableDetector) computeHeapUninitWrites(in *uninitScanInputs, facts *heapUninitFacts) {
+	f := in.f
+	assigns, calls := in.assigns, in.calls
+	mallocVars, mallocAllocator := facts.mallocVars, facts.mallocAllocator
+	resolve := facts.resolve
+	scopedPath := facts.scopedPath
 	// Conditional in-function writes (inside an if/loop body) do not dominate
 	// the read, but they are real write paths: a read after `if (c) p->len = 1;`
 	// is uninitialized on the c==0 path. Track them separately from the
@@ -1647,23 +1715,6 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, in *unini
 	// "never written" init@unseen claim.
 	conditionalWhole := map[string]bool{}
 	conditionalFields := map[string]bool{}
-
-	// heapInit returns the write-path fact for a heap read: a conditional
-	// out-param writer that runs BEFORE the read is the evidence tier ("cond");
-	// a conditional in-function write to the same target is a real may-skip
-	// branch ("branch"); otherwise the weak "none" tier.
-	heapInit := func(key string, line int, path string, whole bool) (initWrite string, initLine int, writer string) {
-		if w, ok := conditionalWriter[key]; ok && w.line < line {
-			return "cond", w.line, w.callee
-		}
-		if whole && conditionalWhole[key] {
-			return "branch", 0, ""
-		}
-		if path != "" && conditionalFields[path] {
-			return "branch", 0, ""
-		}
-		return "none", 0, ""
-	}
 
 	// A whole-var reassignment after the malloc (p = &x, p = other) redirects p
 	// away from the allocated memory, so p is no longer an "uninitialized heap
@@ -1725,15 +1776,6 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, in *unini
 	markField := func(base, path string) {
 		initializedFields[path] = true
 		heapFieldWritten[base] = true
-	}
-
-	// scopedPath replaces the bare base in a full access text with the scoped key
-	// so `p->f` on the `p` malloc'd at line L becomes `p@L->f`.
-	scopedPath := func(key, bareBase, full string) string {
-		if !strings.HasPrefix(full, bareBase) {
-			return full
-		}
-		return key + full[len(bareBase):]
 	}
 
 	// A write inside a runtime branch (if/else body, loop body) is NOT a definite
@@ -1901,6 +1943,25 @@ func (d *UninitVariableDetector) detectHeapUninit(ctx context.Context, in *unini
 		}
 	}
 
+	facts.conditionalWhole = conditionalWhole
+	facts.conditionalFields = conditionalFields
+	facts.wholeInit = wholeInit
+	facts.initializedFields = initializedFields
+	facts.contentInitFields = contentInitFields
+	facts.writePaths = writePaths
+	facts.heapFieldWritten = heapFieldWritten
+}
+
+func (d *UninitVariableDetector) emitHeapUninitUses(ctx context.Context, in *uninitScanInputs, facts *heapUninitFacts) {
+	f, file := in.f, in.file
+	unarys, ptrs, fields, subscripts := in.unarys, in.ptrs, in.fields, in.subscripts
+	result := in.result
+	mallocVars, mallocAllocator := facts.mallocVars, facts.mallocAllocator
+	wholeInit, initializedFields := facts.wholeInit, facts.initializedFields
+	contentInitFields, writePaths, heapFieldWritten := facts.contentInitFields, facts.writePaths, facts.heapFieldWritten
+	resolve := facts.resolve
+	scopedPath := facts.scopedPath
+	heapInit := facts.heapInit
 	for _, unary := range unarys {
 		if !funcLineRange(f, unary.StartLine()) {
 			continue
