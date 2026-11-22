@@ -283,9 +283,10 @@ func staticGlobalMacroWrites(root parser.Node, globals map[string]int) map[strin
 }
 
 // macroAssignsName matches `name =` (but not `name ==`) in a macro body. The
-// name must be a standalone identifier: `prefix_x = 1` does not assign x, so a
-// macro that writes a similarly-spelled variable must not suppress x's null
-// source.
+// name must be a standalone whole-variable target: `prefix_x = 1` does not
+// assign x, and neither does a member/subscript/dereference write (`p->x = 1`,
+// `p.x = 1`, `*p = 1`), so a macro writing a similarly-spelled storage location
+// must not suppress the variable's null source.
 func macroAssignsName(text, name string) bool {
 	idx := 0
 	for {
@@ -303,11 +304,26 @@ func macroAssignsName(text, name string) bool {
 			continue
 		}
 		rest := text[pos+len(name):]
-		trimmed := strings.TrimLeft(rest, " \t")
-		if strings.HasPrefix(trimmed, "=") && !strings.HasPrefix(trimmed, "==") {
-			return true
+		trimmed := strings.TrimLeft(rest, " \t\n\r")
+		if !strings.HasPrefix(trimmed, "=") || strings.HasPrefix(trimmed, "==") {
+			idx = pos + len(name)
+			continue
 		}
-		idx = pos + len(name)
+		// Skip whitespace before the name to find the target's prefix: a
+		// member access, subscript or dereference writes storage, not the
+		// caller local spelled like the member.
+		prev := pos - 1
+		for prev >= 0 && (text[prev] == ' ' || text[prev] == '\t' || text[prev] == '\n' || text[prev] == '\r') {
+			prev--
+		}
+		if prev >= 0 {
+			switch text[prev] {
+			case '.', '>', ']', '[', '*':
+				idx = pos + len(name)
+				continue
+			}
+		}
+		return true
 	}
 }
 

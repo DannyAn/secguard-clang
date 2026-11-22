@@ -181,6 +181,11 @@ func TestMacroAssignsName(t *testing.T) {
 		{"x==1; later x=2", "x", true},
 		{"prefix_x = 1", "x", false},
 		{"y = x", "x", false},
+		{"p->x = 1", "x", false},
+		{"p.x = 1", "x", false},
+		{"*p = 1", "p", false},
+		{"a[i] = 1", "i", false},
+		{"x \t = 1", "x", true},
 	}
 	for _, tc := range cases {
 		if got := macroAssignsName(tc.text, tc.name); got != tc.want {
