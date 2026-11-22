@@ -1,0 +1,22 @@
+{
+  "dismissed": [
+    {
+      "vuln_type": "buffer-overflow",
+      "file": "<ROOT>/src/a.c",
+      "line": 10,
+      "function": "use_buffer",
+      "variable": "buf",
+      "reason": "the caller validates n before the call"
+    },
+    {
+      "vuln_type": "memory-leak",
+      "file": "<ROOT>/src/a.c",
+      "line": 15,
+      "function": "leak_fd",
+      "variable": "fd",
+      "reason": "fd is returned to the caller, ownership transfers"
+    }
+  ],
+  "scan_id": "sc_2026-11-22_010000_abcdef",
+  "total_dismissed": 2
+}

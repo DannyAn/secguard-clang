@@ -1,0 +1,122 @@
+{
+  "audit_path": "<ROOT>/.codeagent/secguard-clang/scans/sc_2026-11-22_010000_abcdef/audit-report.md",
+  "audits": [
+    {
+      "vuln_type": "buffer-overflow",
+      "seed_count": 10,
+      "final_count": 1,
+      "filter_chain": "",
+      "confirmed": 0,
+      "suspected": 0,
+      "auto_confirmed": 1,
+      "auto_confirmed_reviewed_out": 0,
+      "ai_stage_status": "done",
+      "dismissed": 1,
+      "unclassified": 0
+    },
+    {
+      "vuln_type": "memory-leak",
+      "seed_count": 5,
+      "final_count": 1,
+      "filter_chain": "",
+      "confirmed": 0,
+      "suspected": 0,
+      "auto_confirmed": 0,
+      "auto_confirmed_reviewed_out": 1,
+      "ai_stage_status": "done",
+      "dismissed": 1,
+      "unclassified": 0
+    },
+    {
+      "vuln_type": "null-deref",
+      "seed_count": 4,
+      "final_count": 1,
+      "filter_chain": "[{\"name\":\"nullable-source\",\"input_count\":4,\"output_count\":1},{\"name\":\"dedupe\",\"input_count\":1,\"output_count\":1}]",
+      "confirmed": 1,
+      "suspected": 0,
+      "auto_confirmed": 0,
+      "auto_confirmed_reviewed_out": 0,
+      "ai_stage_status": "done",
+      "dismissed": 0,
+      "unclassified": 0
+    },
+    {
+      "vuln_type": "out-of-bounds",
+      "seed_count": 2,
+      "final_count": 1,
+      "filter_chain": "",
+      "confirmed": 1,
+      "suspected": 0,
+      "auto_confirmed": 0,
+      "auto_confirmed_reviewed_out": 0,
+      "ai_stage_status": "done",
+      "dismissed": 0,
+      "unclassified": 0
+    },
+    {
+      "vuln_type": "unchecked-return",
+      "seed_count": 3,
+      "final_count": 1,
+      "filter_chain": "",
+      "confirmed": 1,
+      "suspected": 0,
+      "auto_confirmed": 0,
+      "auto_confirmed_reviewed_out": 0,
+      "ai_stage_status": "done",
+      "dismissed": 0,
+      "unclassified": 0
+    }
+  ],
+  "findings_synced": {
+    "written": 4,
+    "removed": 0,
+    "skipped_unmapped_cwe": 0
+  },
+  "report_path": "<ROOT>/.codeagent/secguard-clang/scans/sc_2026-11-22_010000_abcdef/report.md",
+  "sarif_path": "<ROOT>/.codeagent/secguard-clang/scans/sc_2026-11-22_010000_abcdef/result.sarif",
+  "scan_id": "sc_2026-11-22_010000_abcdef",
+  "status": "ok",
+  "summary": {
+    "actionable_total": 4,
+    "ai_confirmed": 3,
+    "auto_confirm_overturn_rate": 0.5,
+    "auto_confirmed": 1,
+    "auto_confirmed_reviewed_out": 1,
+    "automated_analysis_ms": 1234,
+    "confirmed_total": 4,
+    "converged_candidates": 5,
+    "dismissed_total": 2,
+    "files_in_index": 2,
+    "files_indexed": 2,
+    "functions_in_index": 0,
+    "functions_indexed": 5,
+    "headline": "This scan reported 4 confirmed issues. 1 auto-confirmed by the pipeline, 3 classified by the AI.",
+    "lines_of_code": 25,
+    "raw_seeds": 24,
+    "scale": "2 files / 5 functions / 25 lines",
+    "scan_id": "sc_2026-11-22_010000_abcdef",
+    "scan_metrics_available": true,
+    "severity_breakdown": {
+      "high": {
+        "confirmed": 2,
+        "total": 2
+      },
+      "low": {
+        "confirmed": 1,
+        "total": 1
+      },
+      "medium": {
+        "confirmed": 1,
+        "total": 1
+      }
+    },
+    "types_scanned": 5,
+    "types_with_candidates": 5,
+    "types_with_findings": 4,
+    "unclassified_candidates": 0
+  },
+  "unreviewed_auto_confirmed": 1,
+  "vuln_count": 5,
+  "warning": "1 auto-confirmed finding(s) have no review verdict — re-review them (`report --list-auto-confirmed`, then `report --review-json`) before treating this audit as final",
+  "xlsx_path": "<ROOT>/.codeagent/secguard-clang/scans/sc_2026-11-22_010000_abcdef/result.xlsx"
+}

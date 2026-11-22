@@ -1,0 +1,5 @@
+{
+  "count": 0,
+  "findings": [],
+  "message": "no findings in database; run 'secguard report --write ...' to persist findings after classifying candidates"
+}

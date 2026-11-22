@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "secguard-clang",
+          "version": "<VERSION>",
+          "rules": [
+            {
+              "id": "CWE-476",
+              "name": "null-deref"
+            },
+            {
+              "id": "CWE-787",
+              "name": "buffer-overflow"
+            },
+            {
+              "id": "CWE-125",
+              "name": "out-of-bounds"
+            },
+            {
+              "id": "CWE-252",
+              "name": "unchecked-return"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CWE-476",
+          "level": "error",
+          "message": {
+            "text": "p is dereferenced without a NULL check"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<ROOT>/src/a.c"
+                },
+                "region": {
+                  "startLine": 4,
+                  "snippet": {
+                    "text": "return *p;"
+                  }
+                },
+                "contextRegion": {
+                  "startLine": 1,
+                  "endLine": 19,
+                  "snippet": {
+                    "text": "#include \u003cstdlib.h\u003e\n\nint read_value(const char *p) {\n    return *p;\n}\n\nint use_buffer(int n) {\n    char buf[4];\n    buf[n] = 'x';\n    return buf[0];\n}\n\nint leak_fd(void) {\n    int fd = 3;\n    return fd;\n}\n\nint unchecked(int *p) {\n    return p[0];"
+                  }
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "<SHA256>"
+          },
+          "fingerprints": {
+            "secguard/v1": "fixture-null-deref"
+          },
+          "properties": {
+            "confidence": 0.9,
+            "confirmation_source": "ai",
+            "exception_check": "none",
+            "fix_strategy": "Return early when p is NULL.",
+            "function": "read_value",
+            "reasoning": "get_ptr may return NULL on the negative path",
+            "severity": "high",
+            "status": "confirmed",
+            "variable": "p",
+            "vuln_type": "null-deref"
+          }
+        },
+        {
+          "ruleId": "CWE-787",
+          "level": "error",
+          "message": {
+            "text": "index n is not bounds-checked against buf[4]"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<ROOT>/src/a.c"
+                },
+                "region": {
+                  "startLine": 9,
+                  "snippet": {
+                    "text": "buf[n] = 'x';"
+                  }
+                },
+                "contextRegion": {
+                  "startLine": 1,
+                  "endLine": 20,
+                  "snippet": {
+                    "text": "#include \u003cstdlib.h\u003e\n\nint read_value(const char *p) {\n    return *p;\n}\n\nint use_buffer(int n) {\n    char buf[4];\n    buf[n] = 'x';\n    return buf[0];\n}\n\nint leak_fd(void) {\n    int fd = 3;\n    return fd;\n}\n\nint unchecked(int *p) {\n    return p[0];\n}"
+                  }
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "<SHA256>"
+          },
+          "fingerprints": {
+            "secguard/v1": "fixture-buffer-overflow"
+          },
+          "properties": {
+            "confidence": 1,
+            "confirmation_source": "auto",
+            "function": "use_buffer",
+            "reasoning": "detector proved the write reaches buf with an unguarded index",
+            "severity": "high",
+            "status": "confirmed",
+            "variable": "buf",
+            "vuln_type": "buffer-overflow"
+          }
+        },
+        {
+          "ruleId": "CWE-125",
+          "level": "note",
+          "message": {
+            "text": "strcpy may write past dst"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<ROOT>/src/b.c"
+                },
+                "region": {
+                  "startLine": 4,
+                  "snippet": {
+                    "text": "strcpy(dst, src);"
+                  }
+                },
+                "contextRegion": {
+                  "startLine": 1,
+                  "endLine": 5,
+                  "snippet": {
+                    "text": "#include \u003cstring.h\u003e\n\nvoid copy_all(char *dst, const char *src) {\n    strcpy(dst, src);\n}"
+                  }
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "<SHA256>"
+          },
+          "fingerprints": {
+            "secguard/v1": "fixture-out-of-bounds"
+          },
+          "properties": {
+            "confidence": 0.7,
+            "confirmation_source": "ai",
+            "fix_strategy": "Use strlcpy with the destination capacity.",
+            "function": "copy_all",
+            "reasoning": "no destination size is available at the call site",
+            "severity": "low",
+            "status": "confirmed",
+            "variable": "dst",
+            "vuln_type": "out-of-bounds"
+          }
+        },
+        {
+          "ruleId": "CWE-252",
+          "level": "warning",
+          "message": {
+            "text": "p is indexed without validating the callee return"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<ROOT>/src/a.c"
+                },
+                "region": {
+                  "startLine": 19,
+                  "snippet": {
+                    "text": "return p[0];"
+                  }
+                },
+                "contextRegion": {
+                  "startLine": 4,
+                  "endLine": 20,
+                  "snippet": {
+                    "text": "    return *p;\n}\n\nint use_buffer(int n) {\n    char buf[4];\n    buf[n] = 'x';\n    return buf[0];\n}\n\nint leak_fd(void) {\n    int fd = 3;\n    return fd;\n}\n\nint unchecked(int *p) {\n    return p[0];\n}"
+                  }
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "<SHA256>"
+          },
+          "fingerprints": {
+            "secguard/v1": "fixture-unchecked-return"
+          },
+          "properties": {
+            "confidence": 0.6,
+            "confirmation_source": "ai",
+            "fix_strategy": "Check the allocation result before indexing.",
+            "function": "unchecked",
+            "reasoning": "the caller never checks the returned pointer",
+            "severity": "medium",
+            "status": "confirmed",
+            "variable": "p",
+            "vuln_type": "unchecked-return"
+          }
+        }
+      ],
+      "properties": {
+        "note": "PARTIAL report (--allow-partial): AI classification unfinished; CONFIRMED findings only, dismissed excluded",
+        "stage": "findings-partial"
+      }
+    }
+  ]
+}

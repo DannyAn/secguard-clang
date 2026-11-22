@@ -1,0 +1,9 @@
+findings:
+1	CWE-476	null-deref	confirmed		<ROOT>/src/a.c	4	read_value	p	p is dereferenced without a NULL check	get_ptr may return NULL on the negative path
+2	CWE-787	buffer-overflow	auto-confirmed	confirmed	<ROOT>/src/a.c	9	use_buffer	buf	index n is not bounds-checked against buf[4]	detector proved the write reaches buf with an unguarded index
+3	CWE-401	memory-leak	auto-confirmed	dismissed	<ROOT>/src/a.c	14	leak_fd	fd	fd is never closed
+4	CWE-125	out-of-bounds	confirmed		<ROOT>/src/b.c	4	copy_all	dst	strcpy may write past dst	no destination size is available at the call site
+5	CWE-252	unchecked-return	confirmed		<ROOT>/src/a.c	19	unchecked	p	p is indexed without validating the callee return	the caller never checks the returned pointer
+candidate_verdicts:
+1	buffer-overflow	CWE-787	<ROOT>/src/a.c	10	use_buffer	buf	dismissed	the caller validates n before the call
+2	memory-leak	CWE-401	<ROOT>/src/a.c	15	leak_fd	fd	dismissed	fd is returned to the caller, ownership transfers

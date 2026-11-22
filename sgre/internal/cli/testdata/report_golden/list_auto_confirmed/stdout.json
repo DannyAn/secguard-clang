@@ -1,0 +1,25 @@
+{
+  "count": 1,
+  "findings": [
+    {
+      "context": "```c\n   1 | #include \u003cstdlib.h\u003e\n   2 | \n   3 | int read_value(const char *p) {\n   4 |     return *p;\n   5 | }\n   6 | \n   7 | int use_buffer(int n) {\n   8 |     char buf[4];\n\u003e  9 |     buf[n] = 'x';\n  10 |     return buf[0];\n  11 | }\n  12 | \n  13 | int leak_fd(void) {\n  14 |     int fd = 3;\n  15 |     return fd;\n  16 | }\n  17 | \n```\n",
+      "facts": [
+        {
+          "detail": "write to buf with unchecked n",
+          "token": "sink"
+        }
+      ],
+      "file": "<ROOT>/src/a.c",
+      "function": "use_buffer",
+      "hint": "heap_alloc unguarded_index",
+      "id": 2,
+      "line": 9,
+      "reasoning": "detector proved the write reaches buf with an unguarded index",
+      "rule_id": "CWE-787",
+      "snippet": "buf[n] = 'x';",
+      "summary": "index n is not bounds-checked against buf[4]",
+      "variable": "buf",
+      "vuln_type": "buffer-overflow"
+    }
+  ]
+}

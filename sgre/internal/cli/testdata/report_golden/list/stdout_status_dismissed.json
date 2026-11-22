@@ -1,0 +1,25 @@
+{
+  "count": 1,
+  "findings": [
+    {
+      "id": 3,
+      "rule_id": "CWE-401",
+      "severity": "medium",
+      "confidence": 1,
+      "evidence": "",
+      "status": "auto-confirmed",
+      "file_path": "<ROOT>/src/a.c",
+      "line_number": 14,
+      "function_name": "leak_fd",
+      "summary": "fd is never closed",
+      "review_status": "dismissed",
+      "review_reasoning": "fd is returned to the caller, ownership transfers",
+      "scan_id": "sc_2026-11-22_010000_abcdef",
+      "fingerprint": "fixture-memory-leak",
+      "created_at": <EPOCH>,
+      "vuln_type": "memory-leak",
+      "variable": "fd",
+      "effective_status": "dismissed"
+    }
+  ]
+}

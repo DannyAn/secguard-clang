@@ -1,0 +1,50 @@
+{
+  "scan_id": "sc_2026-11-22_010000_abcdef",
+  "types": [
+    {
+      "auto_confirmed": 1,
+      "candidate_count": 1,
+      "confirmed": 0,
+      "cwe": "CWE-787",
+      "dismissed": 1,
+      "remaining": 0,
+      "vuln_type": "buffer-overflow"
+    },
+    {
+      "auto_confirmed": 0,
+      "candidate_count": 1,
+      "confirmed": 0,
+      "cwe": "CWE-401",
+      "dismissed": 1,
+      "remaining": 0,
+      "vuln_type": "memory-leak"
+    },
+    {
+      "auto_confirmed": 0,
+      "candidate_count": 1,
+      "confirmed": 1,
+      "cwe": "CWE-476",
+      "dismissed": 0,
+      "remaining": 0,
+      "vuln_type": "null-deref"
+    },
+    {
+      "auto_confirmed": 0,
+      "candidate_count": 1,
+      "confirmed": 1,
+      "cwe": "CWE-125",
+      "dismissed": 0,
+      "remaining": 0,
+      "vuln_type": "out-of-bounds"
+    },
+    {
+      "auto_confirmed": 0,
+      "candidate_count": 1,
+      "confirmed": 1,
+      "cwe": "CWE-252",
+      "dismissed": 0,
+      "remaining": 0,
+      "vuln_type": "unchecked-return"
+    }
+  ]
+}
