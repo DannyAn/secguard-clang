@@ -286,8 +286,9 @@ type eventProps struct {
 	// EscapeKind is the ownership-release channel summary a leak event carries
 	// ("return"/"store"/"none", from leakEscapeKind); FreeLines is the comma-
 	// separated release-line list. Together they let the classifier tell a
-	// machine-proved loss from a conditional leak whose release exists but is
-	// bypassed on the leak path.
+	// closed-world "no MODELED channel" conclusion (escape@none, not a machine
+	// proof) from a conditional leak whose release exists but is bypassed on
+	// the leak path.
 	EscapeKind string `json:"escape_kind"`
 	FreeLines  string `json:"free_lines"`
 	// FreeMismatch is the "api:line,..." list of release calls the ExternalAPIs
@@ -298,6 +299,11 @@ type eventProps struct {
 	// TransferOnSuccess calls whose failure branch still owns the object —
 	// the transfer is conditional, so the leak rides the failure path.
 	TransferConditional string `json:"transfer_conditional"`
+	// TransferUnknown is the "api:line,..." list of calls that received the
+	// allocated pointer as an argument but are neither a modeled release nor a
+	// modeled ownership transfer — the closed-world blind spots the classifier
+	// must open the Code Context to judge (transfer-unknown@<api>:<line>).
+	TransferUnknown string `json:"transfer_unknown"`
 	// BorrowFree is the release API called on a borrowed pointer
 	// (origin=free-borrow): the variable came from a borrow-return API and
 	// the call releases an object the caller does not own.

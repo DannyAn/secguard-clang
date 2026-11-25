@@ -147,16 +147,20 @@ var hintTokenRegistry = []HintTokenSpec{
 	// ---- memory-leak / resource-leak ----
 	// The verdict basis for a leak: the acquire line, the certainty tier
 	// (DefiniteLeak), and the ownership-release channel state. The channel
-	// split is what separates the two classifier actions: "no channel at all"
-	// is machine-proved loss, "a channel exists but the CFG proved a leak path
-	// bypasses it" is where the judgment lives.
+	// split is what separates the two classifier actions: "no MODELED channel
+	// at all" (escape@none + leak@definite) is a closed-world conclusion, NOT
+	// a machine proof — an unmodeled callee may still release/transfer the
+	// value, and transfer-unknown@ names exactly those calls; "a channel
+	// exists but the CFG proved a leak path bypasses it" is where the judgment
+	// lives.
 	{Key: "alloc@", Display: "alloc@N", Description: "the allocation site line: {value} (memory-leak)"},
 	{Key: "acquire@", Display: "acquire@N", Description: "the resource acquisition site line: {value} (resource-leak)"},
-	{Key: "leak@definite", Description: "no free/escape/transfer is reachable on ANY path from the allocation to function exit — machine-proved loss"},
+	{Key: "leak@definite", Description: "the closed-world analysis found no MODELED free/escape/transfer on any path from the allocation to function exit — an unmodeled callee may still release or transfer the value; judge the transfer-unknown@ calls before confirming"},
 	{Key: "leak@conditional", Description: "a release channel exists but the CFG proved a leak path bypasses it — judge that path (error/early-return) against free@/escape@"},
+	{Key: "transfer-unknown@", Display: "transfer-unknown@<api>:<line>", Description: "an UNMODELED call received the pointer as an argument ({value}) but is neither a recognized release nor a recognized ownership transfer — it MAY take ownership (a container store, tree mount, BIO handover, out-param wrapper); open the Code Context and judge that call's contract, never confirm from leak@definite alone"},
 	{Key: "escape@return", Description: "the value is returned to the caller somewhere (an ownership transfer exists) — the leak path must be a NON-returning path"},
 	{Key: "escape@store", Description: "the value is stored into a non-local (global/parameter/container) somewhere — the leak path must bypass that store"},
-	{Key: "escape@none", Description: "no ownership-transfer channel exists anywhere in the function"},
+	{Key: "escape@none", Description: "the pipeline found no MODELED ownership-transfer channel in the function — an unmodeled callee may still take ownership (see transfer-unknown@); NOT 'proven no transfer'"},
 	// Global-container shallow free (issue #255): the leak is not at the
 	// candidate line's allocation — it is the deletion path of an object the
 	// global container owns.

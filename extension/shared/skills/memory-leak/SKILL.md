@@ -14,7 +14,7 @@ metadata:
 ### Evidence Pattern
 A memory-leak candidate has:
 - **memory_alloc**: an allocation at a source line — `malloc`/`calloc`/`realloc` (raw or cast), an implicit allocator (`strdup`, `asprintf`/`vasprintf`, `getline`/`getdelim`, `realpath(path, NULL)`), or a custom allocator from the project contract; carries the acquire API (`via malloc`)
-- **definite** / **conditional**: the CFG reachability verdict — `definite` = no free/escape/transfer is reachable on any path to function exit; `conditional` = released on some paths, trace each error/early-return path
+- **definite** / **conditional**: the CFG reachability verdict — `definite` = the closed-world analysis found no MODELED free/escape/transfer on any path to function exit (an unmodeled callee may still release or transfer the value); `conditional` = released on some paths, trace each error/early-return path
 - **call_path**: the function is reachable from an entry point
 - **ref_chain** / **shallow_release** (global-container shallow free): the
   leak is NOT the candidate line's allocation. The leaked block is a
@@ -30,16 +30,17 @@ allocation before a candidate is written. An allocation stored into a wrapper
 object that escapes the caller is re-homed by a `container_transfer` release and
 is reported (if at all) at the object's deletion path, not at the allocation.
 
-The detector marks the seed event `definite=true` when the CFG proves no free/escape/transfer is reachable from the allocation; the planner's leak-proof filter promotes a `definite` candidate to `confirmed`.
+The detector marks the seed event `definite=true` when the CFG proves no MODELED free/escape/transfer is reachable from the allocation. That is a closed-world conclusion, not a machine proof: the leak-proof filter no longer auto-confirms a `definite` candidate — it stays suspected and the AI judges it from the evidence, opening the Code Context whenever `transfer-unknown@` names an unmodeled call that received the pointer.
 
 ### Hint Tokens (Verdict Basis)
 
 | Token | Meaning | Your action |
 |-------|---------|-------------|
 | `alloc@N` | the allocation site line | where the ownership starts |
-| `leak@definite` | no free/escape/transfer is reachable on ANY path — machine-proved loss | verify the statement matches, then confirm |
+| `leak@definite` | the closed-world analysis found no MODELED free/escape/transfer on ANY path — an unmodeled callee may still release/transfer | NOT a machine proof: judge the `transfer-unknown@` calls before confirming |
 | `leak@conditional` | a release channel exists but the CFG proved a leak path bypasses it | trace that error/early-return path against `free@N,M` |
-| `escape@none` | no ownership-transfer channel exists anywhere | nothing to weigh — the loss is total |
+| `transfer-unknown@<api>:<line>` | an UNMODELED call received the pointer as an argument but is neither a recognized release nor a recognized transfer | it MAY take ownership — open the Code Context and judge that call's contract, never confirm from `leak@definite` alone |
+| `escape@none` | no MODELED ownership-transfer channel exists in the function | NOT "proven no transfer" — an unmodeled callee may still take ownership (see `transfer-unknown@`) |
 | `escape@return` | the value is returned to the caller somewhere | the leak path must be a NON-returning path — find it |
 | `escape@store` | the value is stored into a non-local (global/parameter/container) somewhere | the leak path must bypass that store — find it |
 | `free@N,M` | the release sites that exist but do not cover the leak path | the ## Code Context window covers them |
@@ -51,13 +52,15 @@ The detector marks the seed event `definite=true` when the CFG proves no free/es
 | `field-alloc@<function>:<line>` | where the leaked field's block is allocated | the fix belongs on the deletion path shown in the Code Context, not at this allocation line |
 
 The decisive split is the escape token plus the leak token:
-`escape@none` + `leak@definite` settles the row from the Hint; any channel
-token alongside `leak@conditional` names exactly the release the leak path
-skips.
+`escape@none` + `leak@definite` with NO `transfer-unknown@` settles the row from
+the Hint; `transfer-unknown@` (or any channel token alongside `leak@conditional`)
+means you MUST open the Code Context — the pipeline could not see whether that
+callee took ownership.
 
 **Evidence budget:** the common shapes are row-decidable — `leak@definite` +
-`escape@none` → confirm with no open; `leak@conditional` → compare `free@N,M`
-with the row's `Source`; `escape@return|store` + `leak@conditional` is the only
+`escape@none` with no `transfer-unknown@` → confirm with no open;
+`leak@conditional` → compare `free@N,M` with the row's `Source`;
+`escape@return|store` + `leak@conditional` is the only
 shape that needs the `## Code Context` open. Opening every candidate's Evidence
 file in a 25-candidate leak type is a budget violation (`evidence_opens ≤ 12`),
 not thoroughness: settle what the Hint decides, open for the genuine channel
@@ -68,7 +71,7 @@ cases, and list anything still unsettled in `needs_context`.
 2. Collect releases: `free` and deallocators, unwrapping cast/paren (`free((void *)p)`) and following whole-variable aliases (`q = p; free(q)` releases p).
 3. Collect ownership transfer / escape: `return p` (including `return (T *)p`), a store to a non-local (`g = p`, `extern ... global_buf = p`, `state->field = malloc(...)` where the base is caller-owned), and escape-call arguments.
 4. Per allocation, use the statement CFG to decide whether a leak path exists — a path to exit or to a later overwrite with no intervening release/transfer/escape.
-5. If no release/transfer/escape is reachable on any path, mark `definite` (→ confirmed). If release is reachable only on some paths, leave the candidate for the AI as `suspected`.
+5. If no MODELED release/transfer/escape is reachable on any path, mark `definite` (stays suspected for the AI — the closed-world analysis cannot see unmodeled callees, surfaced as `transfer-unknown@`). If release is reachable only on some paths, leave the candidate for the AI as `suspected`.
 
 ### Global-container shallow free
 
@@ -107,7 +110,8 @@ the embedded section and the indexed lookup.
 
 | Condition | Classification |
 |-----------|---------------|
-| `definite`: no free, escape, or transfer is reachable on any path (or all such lines are dead code) | **confirmed** |
+| `definite`: no MODELED free, escape, or transfer is reachable on any path AND no `transfer-unknown@` is present (or all such lines are dead code) | **confirmed** |
+| `transfer-unknown@<api>:<line>` present: an unmodeled call received the pointer | open the Code Context (it covers those lines) and judge the callee's contract — a container store / tree mount / BIO handover / out-param wrapper / intrusive-list add that takes ownership → **false-positive** (the object is owned elsewhere); a call that merely reads/uses the pointer without taking ownership (a `printf`, `strlen`, `memcpy` source) does not release it → **confirmed**. Never confirm from `leak@definite` alone when `transfer-unknown@` is present |
 | Leaked on a concrete error path even though other paths release | **confirmed** |
 | `p = realloc(p, n)` where the failure path (`if (!p) return;`) loses the original block | **confirmed** — the old block is overwritten before the check; preserve it in a temp first (`tmp = realloc(p, n); if (tmp) p = tmp;`) |
 | Freed/escaped/returned on some paths but leaked on others (conditional ownership) | judge the leak path; the verdict stays binary — **confirmed** when a reachable path loses the block without release, **false-positive** when every path releases/escapes |
@@ -117,6 +121,22 @@ the embedded section and the indexed lookup.
 | `container-field@` + `shallow-free@` + `field-alloc@`: a global-container object's heap field is not released on the deletion path that clears the slot | **confirmed** — the reference chain and the allocation witness prove the field was owned by the released object; the missing field release on that path loses it |
 
 An **error-path leak is confirmed, not suspected**: if the function demonstrably returns on a reachable error path with the block still owned and unreleased, that is the same proved shape as a never-freed allocation. `memory-leak` and `resource-leak` must never disagree on this shape.
+
+### Ownership-transfer shapes the closed world cannot see
+
+`transfer-unknown@` fires for any call that received the pointer but is not a
+modeled release/transfer. The common shapes that DO take ownership (and thus
+dismiss a `leak@definite` row after you read the Code Context):
+
+- **intrusive list / queue add**: `listAddNodeTail(head, node)` / `list_add_tail(head, node)` — the node now lives in the list and is freed on list teardown.
+- **tree / map mount**: `rb_insert(tree, node)`, `dictAdd(dict, key, val)`, `hash_set(tbl, key, val)` — the container owns the entry.
+- **BIO / I/O handover**: `bioCreateBackgroundJob(..., arg)` / `SSL_set_fd(...)` — the framework owns the argument.
+- **container store**: `g_table[i] = p` through a setter, `vector_push(v, p)` — the container owns the element.
+- **out-param wrapper**: `make_thing(&p, ...)` where the callee allocates/stores into `p` and the caller is expected to release it, or a wrapper that attaches `p` to a parent.
+
+The reverse (call reads but does not own): `printf("%s", p)`, `strlen(p)`,
+`memcpy(dst, p, n)`, `q = strchr(p, c)` — these do NOT release `p`, so the leak
+stands. Judge from the Code Context, never from the call's name alone.
 
 ### Common False Positives
 - Alias release: `int *q = p; free(q);` — releases p's block

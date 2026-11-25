@@ -7,8 +7,10 @@ import (
 
 // B3 rollout: the leak verdict basis is the acquire line, the certainty tier,
 // and the ownership-release channel state. escape@none + leak@definite is a
-// machine-proved loss; a channel that exists alongside a surviving candidate
-// means the CFG proved a bypass path — that path is the classifier's target.
+// CLOSED-WORLD conclusion (no MODELED channel), not a machine proof —
+// transfer-unknown@ names the unmodeled calls that may take ownership; a
+// channel that exists alongside a surviving candidate means the CFG proved a
+// bypass path — that path is the classifier's target.
 func TestBuildVerdictFacts_Leaks(t *testing.T) {
 	ml, err := GetVulnTypeSpec("memory-leak")
 	if err != nil {
@@ -29,8 +31,26 @@ func TestBuildVerdictFacts_Leaks(t *testing.T) {
 	if !strings.Contains(def[0].Detail, "line 12") || !strings.Contains(def[0].Detail, "malloc") {
 		t.Errorf("alloc fact must name the line and the API:\n%s", def[0].Detail)
 	}
-	if !strings.Contains(def[1].Detail, "ANY path") || !strings.Contains(def[1].Detail, "machine-proved") {
-		t.Errorf("definite fact must state machine-proved loss:\n%s", def[1].Detail)
+	if !strings.Contains(def[1].Detail, "closed-world") || strings.Contains(def[1].Detail, "machine-proved") {
+		t.Errorf("definite fact must state the closed-world conclusion, not a machine proof:\n%s", def[1].Detail)
+	}
+	if !strings.Contains(def[2].Detail, "MODELED") || strings.Contains(def[2].Detail, "no ownership-transfer channel exists") {
+		t.Errorf("escape@none fact must name the MODELED limitation:\n%s", def[2].Detail)
+	}
+
+	// An unmodeled transfer call must surface as its own transfer-unknown@ fact.
+	tu := ml.BuildVerdictFacts(Candidate{Line: 12, DefiniteLeak: true, LeakEscapeKind: "none", LeakTransferUnknown: "list_add_tail:60", APIName: "malloc", FunctionName: "f"})
+	var tuFact *VerdictFact
+	for i := range tu {
+		if strings.HasPrefix(tu[i].Token, "transfer-unknown@") {
+			tuFact = &tu[i]
+		}
+	}
+	if tuFact == nil {
+		t.Fatalf("transfer-unknown fact missing: %+v", tu)
+	}
+	if tuFact.Token != "transfer-unknown@list_add_tail:60" || !strings.Contains(tuFact.Detail, "list_add_tail:60") {
+		t.Errorf("transfer-unknown fact must name the call and line:\n%s", tuFact.Detail)
 	}
 
 	cond := ml.BuildVerdictFacts(Candidate{Line: 12, LeakEscapeKind: "store", LeakFreeLines: "30,45", FunctionName: "g"})
