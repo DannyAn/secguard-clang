@@ -523,9 +523,11 @@ func canReachAnyRelease(cfg *graph.StmtCFG, allocLine int, freeLines, escapeLine
 // variable has (shared by the memory- and resource-leak detectors): "return"
 // when the value is returned to the caller somewhere, "store" when it is
 // stored into a non-local (global/parameter/container), "none" when no
-// channel exists. The planner surfaces it as the escape@ hint token so the
-// classifier can tell "no channel at all" (machine-proved loss) from "a
-// channel exists but the CFG proved a leak path bypasses it".
+// MODELED channel exists. The planner surfaces it as the escape@ hint token so
+// the classifier can tell "no MODELED channel at all" (a closed-world
+// conclusion, NOT a machine proof — transfer-unknown@ names the unmodeled
+// calls that may still take ownership) from "a channel exists but the CFG
+// proved a leak path bypasses it".
 func leakEscapeKind(escapeLines, transferLines []int) string {
 	if len(transferLines) > 0 {
 		return "return"

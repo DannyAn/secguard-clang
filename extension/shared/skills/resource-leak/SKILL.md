@@ -16,24 +16,29 @@ A resource-leak candidate has:
 - **resource_acquire**: A file descriptor, socket, database handle, or lock is
   acquired — carries the acquire API (`via fopen`) when the call name resolved
 - **definite** / **conditional**: the CFG reachability verdict — `definite` =
-  no release is reachable on any path from the acquire to function exit;
-  `conditional` = released on some paths, trace each error/early-return path
-  for a missing close/release
+  the closed-world analysis found no MODELED release/escape/transfer on any
+  path from the acquire to function exit (an unmodeled callee may still
+  release or transfer the handle); `conditional` = released on some paths,
+  trace each error/early-return path for a missing close/release
 - **call_path**: The function is reachable from an entry point
 
 Released acquires never reach you: the pipeline's ReleaseFilter drops a
 proved-released resource before a candidate is written. The detector marks the
-seed event `definite=true` when the CFG proves no release is reachable on any
-path, and the leak-proof filter promotes a `definite` candidate to `confirmed`.
+seed event `definite=true` when the CFG proves no MODELED release is reachable
+on any path. That is a closed-world conclusion, not a machine proof: the
+leak-proof filter no longer auto-confirms a `definite` candidate — it stays
+suspected and the AI judges it from the evidence, opening the Code Context
+whenever `transfer-unknown@` names an unmodeled call that received the handle.
 
 ### Hint Tokens (Verdict Basis)
 
 | Token | Meaning | Your action |
 |-------|---------|-------------|
 | `acquire@N` | the acquisition site line | where the ownership starts |
-| `leak@definite` | no release/escape/transfer is reachable on ANY path — machine-proved loss | verify the statement matches, then confirm |
+| `leak@definite` | the closed-world analysis found no MODELED release/escape/transfer on ANY path — an unmodeled callee may still release/transfer | NOT a machine proof: judge the `transfer-unknown@` calls before confirming |
 | `leak@conditional` | a release channel exists but the CFG proved a leak path bypasses it | trace that error/early-return path against `free@N,M` |
-| `escape@none` | no ownership-transfer channel exists anywhere | nothing to weigh — the loss is total |
+| `transfer-unknown@<api>:<line>` | an UNMODELED call received the handle as an argument but is neither a recognized release nor a recognized transfer | it MAY take ownership — open the Code Context and judge that call's contract, never confirm from `leak@definite` alone |
+| `escape@none` | no MODELED ownership-transfer channel exists in the function | NOT "proven no transfer" — an unmodeled callee may still take ownership (see `transfer-unknown@`) |
 | `escape@return` | the handle is returned to the caller somewhere | the leak path must be a NON-returning path — find it |
 | `escape@store` | the handle is stored into a non-local somewhere | the leak path must bypass that store — find it |
 | `free@N,M` | the close/release sites that exist but do not cover the leak path | the ## Code Context window covers them |
@@ -42,9 +47,10 @@ path, and the leak-proof filter promotes a `definite` candidate to `confirmed`.
 | `free-on-borrow@<api>` | the release targets a BORROWED/aliased handle | an invalid release of a handle owned elsewhere, NOT a leak — dismiss the leak |
 
 The decisive split is the escape token plus the leak token:
-`escape@none` + `leak@definite` settles the row from the Hint; any channel
-token alongside `leak@conditional` names exactly the release the leak path
-skips.
+`escape@none` + `leak@definite` with NO `transfer-unknown@` settles the row from
+the Hint; `transfer-unknown@` (or any channel token alongside `leak@conditional`)
+means you MUST open the Code Context — the pipeline could not see whether that
+callee took ownership.
 
 ### Detection Signals
 - `open()`, `fopen()`, `socket()`, `accept()`, `dup()`, `epoll_create()`, `eventfd()`, `signalfd()`, `timerfd()`, `mkstemp()` → resource acquired
@@ -69,7 +75,8 @@ the embedded section and the indexed lookup.
 
 | Condition | Classification |
 |-----------|---------------|
-| Acquired + no release on any path | **confirmed** |
+| Acquired + no MODELED release on any path AND no `transfer-unknown@` | **confirmed** |
+| `transfer-unknown@<api>:<line>` present: an unmodeled call received the handle | open the Code Context (it covers those lines) and judge the callee's contract — a wrapper that closes/stores the handle → **false-positive**; a call that merely uses the handle without releasing it → **confirmed**. Never confirm from `leak@definite` alone when `transfer-unknown@` is present |
 | Acquired + released on the success path only, leaked on an error return | **confirmed** (error path leak) |
 | Released on all paths | **false-positive** |
 | `goto cleanup` label releasing on all paths | **false-positive** |

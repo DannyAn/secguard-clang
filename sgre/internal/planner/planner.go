@@ -654,6 +654,7 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			LeakFreeLines:           props.FreeLines,
 			LeakFreeMismatch:        props.FreeMismatch,
 			LeakTransferConditional: props.TransferConditional,
+			LeakTransferUnknown:     props.TransferUnknown,
 			LeakFreeOnBorrow:        props.BorrowFree,
 			LeakContainer:           props.LeakContainer,
 			LeakSlot:                props.LeakSlot,

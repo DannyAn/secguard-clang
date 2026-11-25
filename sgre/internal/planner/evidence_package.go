@@ -470,8 +470,10 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			}
 			// The verdict basis: WHERE the resource is acquired, HOW certain
 			// the loss is (DefiniteLeak), and WHAT ownership-transfer channels
-			// exist. escape@none + leak@definite is machine-proved loss; a
-			// channel that exists while the candidate survived means the CFG
+			// exist. escape@none + leak@definite is a CLOSED-WORLD conclusion
+			// (no MODELED channel), not a machine proof — transfer-unknown@
+			// names the unmodeled calls that may take ownership; a channel
+			// that exists while the candidate survived means the CFG
 			// proved a leak path bypasses it — that path is the judgment.
 			if spec.Name == "memory-leak" {
 				parts = append(parts, fmt.Sprintf("alloc@%d", c.Line))
@@ -501,6 +503,13 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			// the guard is the leak path.
 			if c.LeakTransferConditional != "" {
 				parts = append(parts, "transfer-cond@"+c.LeakTransferConditional)
+			}
+			// Unmodeled calls that received the pointer as an argument but are
+			// neither a recognized release nor a recognized transfer — the
+			// closed-world blind spots the classifier must open the Code
+			// Context to judge before confirming leak@definite.
+			if c.LeakTransferUnknown != "" {
+				parts = append(parts, "transfer-unknown@"+c.LeakTransferUnknown)
 			}
 			// A release on a borrowed pointer (cJSON_Delete on
 			// cJSON_GetObjectItem's result, free on strstr's): an invalid
@@ -1047,6 +1056,17 @@ func newEvidenceItem(c Candidate, spec *VulnTypeSpec, fileName string) EvidenceI
 	for _, s := range strings.Split(c.LeakFreeLines, ",") {
 		if ln, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && ln > 0 {
 			item.SourceLines = append(item.SourceLines, ln)
+		}
+	}
+	// Unmodeled transfer calls ("api:line,...") must widen the Code Context too:
+	// the whole point of transfer-unknown@ is that the classifier opens the
+	// window and reads the call's contract, so the call line must be in view
+	// (reuse the source→sink widening, same as free@N above).
+	for _, s := range strings.Split(c.LeakTransferUnknown, ",") {
+		if i := strings.LastIndex(s, ":"); i >= 0 {
+			if ln, err := strconv.Atoi(strings.TrimSpace(s[i+1:])); err == nil && ln > 0 {
+				item.SourceLines = append(item.SourceLines, ln)
+			}
 		}
 	}
 	if c.SuspicionLevel != "" {

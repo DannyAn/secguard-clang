@@ -556,9 +556,11 @@ func buildBufferVerdictFacts(c Candidate) []VerdictFact {
 
 // buildLeakVerdictFacts distills the memory/resource-leak verdict basis: the
 // acquire line, the certainty tier, and the ownership-release channel state.
-// The channel split is the classifier's decision point — escape@none is a
-// machine-proved loss, while a channel that exists alongside a surviving
-// leak candidate means the CFG proved a bypass path.
+// The channel split is the classifier's decision point — escape@none +
+// leak@definite is a CLOSED-WORLD conclusion (no MODELED channel), NOT a
+// machine proof; transfer-unknown@ names the unmodeled calls that may take
+// ownership, and a channel that exists alongside a surviving leak candidate
+// means the CFG proved a bypass path.
 func buildLeakVerdictFacts(c Candidate) []VerdictFact {
 	// Global-container shallow free (issue #255): the candidate line is the
 	// slot-clear (loss) line, not an allocation site, so the allocation-centric
@@ -609,7 +611,7 @@ func buildLeakVerdictFacts(c Candidate) []VerdictFact {
 	if c.DefiniteLeak {
 		facts = append(facts, VerdictFact{
 			Token:  "leak@definite",
-			Detail: "no free/escape/transfer is reachable on ANY path from the allocation to function exit — machine-proved loss, verify the statement matches and confirm",
+			Detail: "the closed-world analysis found no MODELED free/escape/transfer on any path from the allocation to function exit — an unmodeled callee may still release or transfer the value; judge the transfer-unknown@ calls before confirming",
 		})
 	} else {
 		facts = append(facts, VerdictFact{
@@ -631,7 +633,13 @@ func buildLeakVerdictFacts(c Candidate) []VerdictFact {
 	case "none":
 		facts = append(facts, VerdictFact{
 			Token:  "escape@none",
-			Detail: "no ownership-transfer channel exists anywhere in the function",
+			Detail: "the pipeline found no MODELED ownership-transfer channel in the function — an unmodeled callee may still take ownership (see transfer-unknown@); NOT 'proven no transfer'",
+		})
+	}
+	if c.LeakTransferUnknown != "" {
+		facts = append(facts, VerdictFact{
+			Token:  "transfer-unknown@" + c.LeakTransferUnknown,
+			Detail: fmt.Sprintf("unmodeled call(s) `%s` received the pointer as an argument but are neither a recognized release nor a recognized transfer — they MAY take ownership; open the Code Context (it covers these lines) and judge the call's contract before confirming", c.LeakTransferUnknown),
 		})
 	}
 	if c.LeakFreeLines != "" {

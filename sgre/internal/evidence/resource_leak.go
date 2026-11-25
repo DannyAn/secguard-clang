@@ -110,6 +110,18 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					// they stay suspected for the AI to judge.
 					definiteLeak := !safeHolds[fmt.Sprintf("%s:%d", varName, acquireLine)] &&
 						!shouldReportRelease && len(releaseLines) == 0 && len(escapeLines) == 0 && len(transferLines) == 0
+					knownLines := make(map[int]bool, len(releaseLines)+len(escapeLines)+1)
+					// The acquire call itself (an out-param factory like
+					// sqlite3_open(path, &db) / fopen_s(&f, ...) receives &db/&f)
+					// is not a transfer — it CREATES the handle, so exclude its line.
+					knownLines[acquireLine] = true
+					for _, l := range releaseLines {
+						knownLines[l] = true
+					}
+					for _, l := range escapeLines {
+						knownLines[l] = true
+					}
+					transferUnknownCalls := findTransferUnknownCalls(calls, f, varName, knownLines)
 					acquireProps := map[string]string{
 						"variable": varName,
 						"origin":   "resource_acquire",
@@ -123,6 +135,9 @@ func (d *ResourceLeakDetector) Detect(ctx context.Context) (DetectResult, error)
 					}
 					if len(releaseLines) > 0 {
 						acquireProps["free_lines"] = joinIntLines(releaseLines)
+					}
+					if len(transferUnknownCalls) > 0 {
+						acquireProps["transfer_unknown"] = strings.Join(transferUnknownCalls, ",")
 					}
 					if definiteLeak {
 						acquireProps["definite"] = "true"

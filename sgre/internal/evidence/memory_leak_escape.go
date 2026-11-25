@@ -291,6 +291,45 @@ func findEscapeLines(assigns, calls, returns, ids []parser.Node, f *db.Function,
 	return lines
 }
 
+// findTransferUnknownCalls returns the "api:line,..." list of calls that pass
+// varName as an argument but are neither a recognized release nor a recognized
+// ownership transfer for this allocation (their lines are absent from
+// knownLines, the union of the site's effective free, mismatch, escape and
+// conditional-transfer lines). These are the closed-world blind spots: a
+// custom container store (list_add_tail), tree mount, BIO handover, or out-param
+// wrapper that neither the naming heuristics nor the modeled API table can see.
+// The planner surfaces them as transfer-unknown@<api>:<line> so the classifier
+// opens the Code Context instead of trusting leak@definite + escape@none.
+func findTransferUnknownCalls(calls []parser.Node, f *db.Function, varName string, knownLines map[int]bool) []string {
+	var out []string
+	seen := map[int]bool{}
+	for _, call := range calls {
+		if !funcLineRange(f, call.StartLine()) || seen[call.StartLine()] {
+			continue
+		}
+		seen[call.StartLine()] = true
+		if knownLines[call.StartLine()] {
+			continue
+		}
+		api := extractCallName(call)
+		if api == "" {
+			continue
+		}
+		matched := false
+		for _, arg := range getCallArgs(call) {
+			if argIdentifier(arg) == varName {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		out = append(out, api+":"+strconv.Itoa(call.StartLine()))
+	}
+	return out
+}
+
 // ownershipTakingErrorCall reports whether call is a directly-returned call
 // to an error-handling / comm function whose name carries the semantics
 // (fail / *_err* / *_comm* / *_send*).

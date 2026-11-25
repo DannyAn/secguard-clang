@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
 	"github.com/DannyAn/secguard-clang/internal/log"
@@ -151,6 +152,29 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 					// no failure-branch release is NOT an unconditional escape —
 					// the failure path still owns (and leaks) the object.
 					escapeLines, conditionalTransfers := splitConditionalEscapes(escapeLinesAll, calls, ifs, freeLines)
+					// Unmodeled ownership hand-off: every call that receives the
+					// pointer as an argument but is neither a recognized release
+					// nor a recognized escape/transfer. Surfaced as
+					// transfer-unknown@<api>:<line> so the AI opens the Code
+					// Context instead of trusting leak@definite + escape@none.
+					knownLines := make(map[int]bool, len(freeLines)+len(escapeLines)+len(conditionalTransfers)+len(mismatchedCalls)+1)
+					// The allocation call itself (an out-param allocator like
+					// asprintf(&p, ...) / getline(&p, ...) receives &p) is not a
+					// transfer — it CREATES the pointer, so exclude its line.
+					knownLines[allocLine] = true
+					for _, l := range freeLines {
+						knownLines[l] = true
+					}
+					for _, l := range escapeLines {
+						knownLines[l] = true
+					}
+					for _, l := range conditionalTransfers {
+						knownLines[l] = true
+					}
+					for _, mc := range mismatchedCalls {
+						knownLines[mc.line] = true
+					}
+					transferUnknownCalls := findTransferUnknownCalls(calls, f, varName, knownLines)
 					shouldReportLeak := false
 					shouldReportRelease := false
 
@@ -231,6 +255,9 @@ func (d *MemoryLeakDetector) Detect(ctx context.Context) (DetectResult, error) {
 						}
 						if len(mismatchedCalls) > 0 {
 							props["free_mismatch"] = joinFreeCalls(mismatchedCalls)
+						}
+						if len(transferUnknownCalls) > 0 {
+							props["transfer_unknown"] = strings.Join(transferUnknownCalls, ",")
 						}
 						if definiteLeak {
 							props["definite"] = "true"

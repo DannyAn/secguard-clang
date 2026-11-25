@@ -86,10 +86,12 @@ read as a single file — the directory page is only present when sharding fired
 
 **Evidence-open budget (a budgeted resource, not a default step).** A DECISIVE
 hint settles a row with NO open: `certain-null` / `null@cfg-proof` /
-`null@malloc-fail` / `leak@definite` + `escape@none` / a constant `idx@` past
+`null@malloc-fail` / `leak@definite` + `escape@none` with no `transfer-unknown@`
+/ a constant `idx@` past
 `cap@` / `contract@known` / `async-unsafe@` / `cast@`. Open the `Evidence` file
 ONLY for a HEURISTIC token the row cannot settle (`maybe-null` / `maybe-uninit` /
-`init@error-path` / `taint@none` / `leak@conditional` / `escape@return|store` /
+`init@error-path` / `taint@none` / `leak@conditional` / `transfer-unknown@` /
+`escape@return|store` /
 non-literal `fmt-arg@` / `path-arg@`). The budget is `evidence_opens ≤ 12` per
 subagent (whole type or range). When a type genuinely needs more, STOP opening:
 settle the rest from `Source` + `Hint` with a cited token, and list the
@@ -221,7 +223,8 @@ Two kinds of hint — do NOT conflate them:
 
 **Machine-proved facts → decisive, classify from the row with no read:**
 - confirm: `certain-null`/`null@cfg-proof`/`null@malloc-fail`/`tainted`/
-  constant-`idx@`-past-`cap@`/`leak@definite`/`async-unsafe@`/
+  constant-`idx@`-past-`cap@`/`leak@definite` (with no `transfer-unknown@`)/
+  `async-unsafe@`/
   `cast@`(incompatible types).
 - dismiss: `contract@unknown`/`macro-context`(unproven macro)/`discard`/
   `src-cap@ ≤ cap@`/`value-shape@`(placeholder/test).
@@ -405,11 +408,18 @@ budget your effort, not to pre-judge the answer:
    known capacity (a `strcpy(g_dst, g_src)` with src-cap@ ≤ cap@ copies a
    bounded source into a same-or-larger destination — dismiss from the row, no
    read), `alloc@N`/`acquire@N` = the leak's allocation/acquisition
-  line, `leak@definite` = machine-proved loss (no release channel reachable
-  on any path), `leak@conditional` = a release channel exists but the CFG
-  proved a leak path bypasses it, `escape@none|store|return` = the
-  ownership-transfer channel state, `free@N,M` = the release sites that
-  exist but do not cover the leak path, `range@<interval>` = the range
+  line, `leak@definite` = the closed-world analysis found no MODELED release
+  channel on any path (an unmodeled callee may still release/transfer — judge
+  the `transfer-unknown@` calls before confirming), `leak@conditional` = a
+  release channel exists but the CFG proved a leak path bypasses it,
+  `transfer-unknown@<api>:<line>` = an UNMODELED call received the
+  pointer/handle as an argument but is neither a recognized release nor a
+  recognized transfer — it MAY take ownership, so open the Code Context and
+  judge its contract (never confirm from `leak@definite` alone),
+  `escape@none|store|return` = the ownership-transfer channel state
+  (`escape@none` means no MODELED channel, NOT "proven no transfer"),
+  `free@N,M` = the release sites that exist but do not cover the leak path,
+  `range@<interval>` = the range
   engine's proved interval for the divisor (it contains 0 — judge the 0
   endpoint), `callers@<census>` = the divide-by-zero call-site census (the
   callers passing non-constants are the ones to check), `origin@<kind>` =

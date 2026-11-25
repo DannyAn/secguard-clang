@@ -451,6 +451,12 @@ type Candidate struct {
 	// LeakTransferConditional is the "api:line,..." list of guarded conditional
 	// ownership transfers whose failure branch still owns the object.
 	LeakTransferConditional string `json:"leak_transfer_conditional,omitempty"`
+	// LeakTransferUnknown is the "api:line,..." list of unmodeled calls that
+	// received the allocated pointer as an argument but are neither a modeled
+	// release nor a modeled ownership transfer — surfaced as
+	// transfer-unknown@<api>:<line> so the classifier opens the Code Context
+	// instead of trusting leak@definite + escape@none.
+	LeakTransferUnknown string `json:"leak_transfer_unknown,omitempty"`
 	// LeakFreeOnBorrow is the release API called on a borrowed pointer
 	// (cJSON_Delete on cJSON_GetObjectItem's result, free on strstr's) —
 	// an invalid free of an object owned elsewhere.

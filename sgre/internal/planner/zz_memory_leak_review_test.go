@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DannyAn/secguard-clang/internal/db"
@@ -306,6 +307,61 @@ func keysOf[V any](m map[string]V) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// L2 (issue #328): a call that receives the allocated pointer as an argument
+// but is neither a recognized release nor a recognized ownership transfer is
+// an unmodeled hand-off — it must surface as transfer-unknown@<api>:<line> so
+// the classifier opens the Code Context instead of trusting leak@definite +
+// escape@none. db_attach carries no release/transfer spelling, so the
+// closed-world analysis cannot see that it may take ownership.
+func TestMemoryLeakReview_TransferUnknown(t *testing.T) {
+	src := `#include <stdlib.h>
+#include <stdio.h>
+
+void db_attach(void *parent, void *obj);
+
+int idm_import(void *parent) {
+    void *p = malloc(64);
+    db_attach(parent, p);
+    return 0;
+}
+
+int asprintf_only(int c) {
+    char *p = 0;
+    asprintf(&p, "%d", c);
+    return 0;
+}
+`
+	got := planMemoryLeak(t, src)
+	c, ok := got["idm_import"]
+	if !ok {
+		t.Fatalf("idm_import must be a candidate, got %v", keysOf(got))
+	}
+	found := false
+	for _, tok := range c.HintTokens {
+		if strings.HasPrefix(tok, "transfer-unknown@db_attach:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("idm_import must carry transfer-unknown@db_attach:<line>, got %v", c.HintTokens)
+	}
+	if c.SuspicionLevel != "suspected" {
+		t.Errorf("unmodeled-transfer leak must stay suspected for the AI, got %q", c.SuspicionLevel)
+	}
+
+	// The out-param allocator itself (&p to asprintf) is the allocation, not a
+	// transfer — it must NOT be flagged as transfer-unknown.
+	if a, ok := got["asprintf_only"]; ok {
+		for _, tok := range a.HintTokens {
+			if strings.HasPrefix(tok, "transfer-unknown@") {
+				t.Errorf("asprintf_only: the allocation call must not be a transfer-unknown, got %v", a.HintTokens)
+			}
+		}
+	} else {
+		t.Errorf("asprintf_only must be a candidate, got %v", keysOf(got))
+	}
 }
 
 // issue #281 M1 residual: a business-named release helper (`table_teardown`)

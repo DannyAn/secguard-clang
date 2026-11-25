@@ -130,6 +130,7 @@ type LeakPayload struct {
 	LeakFreeLines           string
 	LeakFreeMismatch        string
 	LeakTransferConditional string
+	LeakTransferUnknown     string
 	LeakFreeOnBorrow        string
 	LeakContainer           string
 	LeakSlot                string
@@ -148,6 +149,7 @@ func (c Candidate) Leak() LeakPayload {
 		LeakFreeLines:           c.LeakFreeLines,
 		LeakFreeMismatch:        c.LeakFreeMismatch,
 		LeakTransferConditional: c.LeakTransferConditional,
+		LeakTransferUnknown:     c.LeakTransferUnknown,
 		LeakFreeOnBorrow:        c.LeakFreeOnBorrow,
 		LeakContainer:           c.LeakContainer,
 		LeakSlot:                c.LeakSlot,
