@@ -18,7 +18,7 @@ func init() {
 			}
 			// contract@unknown puts the proof burden on the classifier, so the
 			// candidate file must CONTAIN the callee body: cross-file static
-			// factories are the norm and neither the ±8 window nor the Failure
+			// factories are the norm and neither the ±20 window nor the Failure
 			// Contract line can hold a callee from another file. The report
 			// renders ## Callee Definition from CalleeDefFile:Line-EndLine, so
 			// the classifier proves/refutes the sentinel in place instead of

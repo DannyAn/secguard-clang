@@ -221,8 +221,8 @@ index read itself). The prior hardcoded 20 violated neither proof nor measuremen
 **Evidence volume is part of constraint 2, not a footnote:** the context a batch
 actually consumes is `skill + legend + N × per_candidate_index_token +
 N × r_type × per_evidence_open_bytes`. For a line-level type the Evidence is a
-±8-line window (small); for a whole-function-embedding (heavy) type it is the
-whole function (~200 lines, 10–25× the window), so the heavy type's N must use
+±20-line window (small); for a whole-function-embedding (heavy) type it is the
+whole function (~200 lines, ~5× the window), so the heavy type's N must use
 that whole-function byte estimate, and heavy types always get dedicated batches.
 
 **The 12-open budget is per SUBAGENT (per batch), never per type:** a mixed batch
@@ -249,7 +249,7 @@ reviewed at scan time), so they are NOT budgeted or dispatched at all.
 
 `SMALL_TYPE_SEQUENTIAL_THRESHOLD` = **≤15 candidates**: a type with ≤15 candidates and
 NO whole-function-embedding member (integer-overflow embeds the whole function span
-up to ~200 lines — 10–25× the evidence volume of line-level types) is cheaper for
+up to ~200 lines — ~5× the evidence volume of line-level types) is cheaper for
 the orchestrator to classify directly (no skill-load / subagent-spawn fixed cost)
 than to dispatch. Production: the orchestrator classified 9 small-type candidates
 in ~5 minutes while a 12-candidate two-heavy-skill subagent batch ran 36 minutes —
@@ -269,7 +269,7 @@ understates cost because the index row is a single line while the Evidence file
 is the whole function.
 
 The B1 types `stack-address-escape` / `invalid-free` / `switch-fallthrough` are
-LIGHT (line-level ±8-line evidence) and participate in the existing grouping
+LIGHT (line-level ±20-line evidence) and participate in the existing grouping
 rules as light types — treat them like any other light type, do not re-derive a
 new capacity class for an unfamiliar name.
 
@@ -329,7 +329,7 @@ so overlapping types do not multiply the budget.
 
 When a type's candidates span MORE source files than the budget can cover, do NOT
 keep opening sources: the `Evidence` file for a candidate embeds that candidate's
-own ±8-line `## Code Context`, so open the `Evidence` files for the candidates
+own ±20-line `## Code Context`, so open the `Evidence` files for the candidates
 that actually need verification instead. Never turn the budget into "read the
 whole repo" — on a real codebase that is what exhausts the context window and
 leaves the tail candidates unclassified.
@@ -714,7 +714,7 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       divide-by-zero, `Hint` is `divisor@<shape>`
       (`bare` = a plain identifier, `call` = a call result, `compound` = a complex
       expression, `field`/`global` = struct member / module global): **EVERY
-      shape — including `bare` and `field` — requires the ±8-line Code Context
+      shape — including `bare` and `field` — requires the ±20-line Code Context
       before confirming**; the shape says where the divisor comes from, NOT
       whether it is guarded (the pipeline already dropped every divisor it could
       prove non-zero, so a row that reaches you means no modelled guard exists —
@@ -734,10 +734,13 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       fact do you open the source (within the ≤5 source-read budget) to settle
       it, then write the verdict with a cited reason — never write `dismissed`
       without a decisive/narrowing fact AND without reading.
-    `## Code Context` is a ±8-line window around the reported line for most types,
-    but **integer-overflow** embeds the WHOLE function span (signature → candidate,
-    up to ~200 lines) because its verdict needs the parameter types, the entry
-    guard, and the accumulation chain — facts a ±8 window cannot show. Either way
+    `## Code Context` is a ±20-line window around the reported line for most
+    candidates, but a candidate whose enclosing function is SMALL (≤ ~60 lines)
+    embeds the WHOLE function body, and **integer-overflow** embeds the WHOLE
+    function span (signature → candidate, up to ~200 lines) because its verdict
+    needs the parameter types, the entry guard, and the accumulation chain — facts
+    a ±20 window cannot show. The header line names the extraction reason
+    (`local window` / `enclosing function` / `source→sink span`). Either way
     it never exceeds ~200 lines, so opening it cannot exhaust your context, and a
     large function is NOT a reason to classify from the `Source` column alone.
     A complex function is exactly where careful analysis matters most: classify
@@ -980,7 +983,7 @@ claim 行只是 `settlement_stats` 里的 `status='dispatched'` 占位，**不�
       | CWE-457 uninit | `certain-uninit` / `init@none` = "never written" | the variable is written by a macro (`macro-context` in its hints, or its name appears in a macro invocation in the window), is a block-scope `extern`/`static`, the struct is written field-by-field before the read. A row whose hints carry `init@branch`/`init@error-path` contradicts the `init@none` premise → dismiss citing the token. A row passed as `&var` to an IN-SCAN callee is dismissed only when that callee's body writes `*var` (cite file:line); a callee outside the scan stays `unverified` |
       | CWE-476 null-deref | `null@cfg-proof` = "NULL reaches on every path" | the dereference sits in a macro that may assign the pointer (an iteration macro's loop header) |
       | CWE-134 format-string | a non-literal format reaches a sink | every in-tree caller of the format parameter passes a literal (`callsites@N:all-literal`) |
-      | CWE-369 divide-by-zero | a proved-zero / non-zero-constant divisor | a zero guard sits in the ±8-line window before the division |
+      | CWE-369 divide-by-zero | a proved-zero / non-zero-constant divisor | a zero guard sits in the ±20-line window before the division |
       | other | the proof class named in the row's facts | a concrete `file:line` in the source contradicts the premise |
 
    c. Write the dismissals in ONE batch (no per-row subprocess), every reason citing

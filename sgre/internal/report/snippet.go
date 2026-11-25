@@ -19,14 +19,20 @@ import (
 // report artifacts).
 var ContextLines = 15
 
-// candidateContextLines is the source window embedded in each candidate evidence
-// file (the AI classifier's input). It is deliberately smaller than ContextLines:
-// the classifier reads the exact statement from the `_index.md` Source column and
-// the flow summary from `## Evidence`, so the Code Context only needs to show the
-// LOCAL guard/reassignment around the statement. A smaller window is the single
-// biggest lever against subagent context overflow on suspected-heavy types
-// (each suspected candidate opens its evidence file).
-var candidateContextLines = 8
+// CandidateContextLines is the local source window embedded on each side of a
+// candidate's reported line in its candidate evidence file (the AI classifier's
+// input). It is the L1 layer of the layered context model: a cheap, stable base
+// that shows the guard/reassignment around the statement. The classifier still
+// reads the exact statement from the `_index.md` Source column and the flow
+// summary from `## Evidence`; the window only needs to show the LOCAL context,
+// so this stays bounded even on suspected-heavy types (each suspected candidate
+// opens its evidence file).
+//
+// It is a var so cli can configure it via `[scan] candidate_context_lines`
+// (default 20, issue #330); the findings/SARIF human-review window is the
+// separate ContextLines (--context-lines). A token-constrained deployment can
+// dial this down without touching the pipeline.
+var CandidateContextLines = 20
 
 // maxContextLines caps the window so one finding cannot turn into a file dump.
 const maxContextLines = 200
@@ -42,6 +48,11 @@ type codeContext struct {
 	EndLine   int
 	Line      int
 	Lines     []string // the region, in order, starting at StartLine
+	// Reason, when non-empty, names the extraction reason (the context layer)
+	// rendered in the header so a reader can trace WHY this region was chosen:
+	// "local window" (L1), "enclosing function" (L2), "source→sink span" (the
+	// decisive-source widening), "callee definition", etc.
+	Reason string
 	// Note, when non-empty, is an advisory line rendered under the Code
 	// Context header — e.g. that the source→sink span exceeded the window
 	// cap and a decisive line sits outside the shown region.
@@ -217,6 +228,19 @@ func readCodeSpan(filePath string, start, end, line int, roots ...string) *codeC
 		region = append(region, l)
 	}
 	return &codeContext{Path: path, StartLine: start, EndLine: end, Line: line, Lines: region}
+}
+
+// reasonLabel returns the context region's extraction reason for the header,
+// defaulting to "local window" so a region that did not set one still renders a
+// traceable label.
+func (c *codeContext) reasonLabel() string {
+	if c == nil {
+		return "local window"
+	}
+	if c.Reason != "" {
+		return c.Reason
+	}
+	return "local window"
 }
 
 // render produces a gutter-numbered C block with the finding line marked, in

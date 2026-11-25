@@ -32,9 +32,11 @@ type macroWindowScan struct {
 }
 
 // macroContextWindow is how many source lines on each side of the reported
-// statement are scanned for a macro call. It matches candidateContextLines so a
-// guard macro a few lines BEFORE the deref (DBM_CHECK_RET) and an accessor macro
-// ON the deref line (DBM_TAILQ_FIRST) are both caught.
+// statement are scanned for a macro call. It is an independent precision window
+// (a guard macro a few lines BEFORE the deref, like DBM_CHECK_RET, and an
+// accessor macro ON the deref line, like DBM_TAILQ_FIRST, are both caught); it
+// is deliberately smaller than the report layer's rendered Code Context window
+// so a macro far outside the window never blocks the auto-confirm gate.
 const macroContextWindow = 8
 
 // macroContextDetector detects whether a candidate's source region involves a

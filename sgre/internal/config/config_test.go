@@ -806,3 +806,24 @@ func TestConfigChecksum_SuggestedMissingScanStillWorks(t *testing.T) {
 		t.Fatalf("no-config ConfigChecksum = %q, want %q", got, "default")
 	}
 }
+
+// candidate_context_lines is configurable and defaults to 20 (issue #330): the
+// L1 local source window is no longer a hardcoded ±8.
+func TestScanCandidateContextLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secguard.toml")
+	if err := os.WriteFile(path, []byte("[scan]\ncandidate_context_lines = 12\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	SetExplicitPath(path)
+	if got := Load().CandidateContextLines(); got != 12 {
+		t.Fatalf("explicit candidate_context_lines = %d, want 12", got)
+	}
+
+	SetExplicitPath("")
+	t.Setenv("SECGUARD_CONFIG", "")
+	t.Chdir(t.TempDir())
+	if got := Load().CandidateContextLines(); got != 20 {
+		t.Fatalf("default candidate_context_lines = %d, want 20", got)
+	}
+}

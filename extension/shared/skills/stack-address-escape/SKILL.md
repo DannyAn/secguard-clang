@@ -31,7 +31,7 @@ A stack-address-escape candidate has:
 
 `escape-kind@return` + `static@no` settles the row from the hint alone: returning
 the address of an auto local is a certain CWE-562. The store / async-arg shapes
-need the `## Code Context` (±8 lines) to judge the target's lifetime against the
+need the `## Code Context` (±20 lines) to judge the target's lifetime against the
 frame's.
 
 ### Detection Logic

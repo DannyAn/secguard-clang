@@ -43,7 +43,7 @@ Evidence file fragments:
 
 A `reason@` token (no `key-size@`) names the weak primitive but NOT the use:
 the verdict requires the **use context** — MD5/DES/RC4/`rand()` for a password
-hash, signature, encryption key, or nonce is **confirmed** (read the ±8 Code
+hash, signature, encryption key, or nonce is **confirmed** (read the ±20 Code
 Context); MD5 for a checksum / non-security hash, or `rand()` for UI/test/tie-break,
 is **dismissed**. Do not confirm from the `reason@` token alone.
 

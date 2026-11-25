@@ -330,10 +330,11 @@ type Candidate struct {
 	// operand types without opening the source file.
 	FunctionSignature string `json:"function_signature,omitempty"`
 	// FuncStartLine/FuncEndLine are the enclosing function's body span from the
-	// index. integer-overflow evidence renders the WHOLE span (signature →
-	// candidate, capped at maxContextLines) because its verdict needs the
-	// parameter types, the entry guard and the accumulation chain — the promise
-	// command-instructions.md makes to the classifier.
+	// index. The report layer's layered Code Context (issue #330) embeds the
+	// WHOLE span for a small function (≤ maxFunctionContextLines) and always for
+	// integer-overflow (signature → candidate, capped at maxContextLines) —
+	// because its verdict needs the parameter types, the entry guard and the
+	// accumulation chain — otherwise it falls back to the local window.
 	FuncStartLine int `json:"func_start_line,omitempty"`
 	FuncEndLine   int `json:"func_end_line,omitempty"`
 	// LHSKind/RHSKind classify an integer-overflow unsigned_sub_underflow operand

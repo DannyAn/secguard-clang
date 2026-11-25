@@ -709,7 +709,7 @@ func nullableSourceDetail(c Candidate) string {
 
 // taintSourceDetail states the taint-origin fact a classifier can act on. The
 // old wording told the classifier to "identify the specific source in Code
-// Context", but the taint source is frequently more than ±8 lines from the
+// Context", but the taint source is frequently more than ±20 lines from the
 // sink — or enters through a caller's argument — so the window physically
 // cannot contain it, and the instruction sent the classifier hunting for
 // evidence that was never in view (dismiss-by-budget false negatives). The
