@@ -719,6 +719,7 @@ func runScanCmd(ctx context.Context, args []string) (exitCode int) {
 			output["scan_runs_error"] = err.Error()
 		}
 		output["scan_metrics"] = renderScanMetrics(run)
+		output["context_stats"] = scanOutput.ContextStats().Summary()
 	}
 
 	// 先写完 report.md/SARIF 再输出 JSON，确保调用方拿到 JSON 时 report.md 一定存在

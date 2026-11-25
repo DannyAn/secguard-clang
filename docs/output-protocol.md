@@ -31,6 +31,7 @@ A **dismissed** verdict produces **no file** under `findings/`: it is recorded i
 │           │   ├── result.xlsx         # Excel export for the dev team (confirmed only)
 │           │   ├── audit-report.md     # Per-skill pipeline + AI statistics
 │           │   ├── dismissed.json      # Ledger of pipeline-dropped candidates
+│           │   ├── context-stats.json  # Context-assembly telemetry (L1/L2/L3 hit rates + line volume)
 │           │   ├── scan.log            # NDJSON runtime log for this scan
 │           │   ├── candidates/         # pipeline evidence, grouped by vuln type
 │           │   │   ├── buffer-overflow/

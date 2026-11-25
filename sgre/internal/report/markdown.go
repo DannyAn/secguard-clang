@@ -244,6 +244,7 @@ func (o *ScanOutput) writeReport(packages []*planner.PlanResult, indexSummary In
 // agent classifies them, and only the actionable verdicts get a file under
 // findings/<vuln-type>/ (see SyncPerFinding).
 func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
+	stats := newContextStats()
 	for _, pkg := range packages {
 		if len(pkg.Candidates) == 0 {
 			continue
@@ -316,6 +317,7 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			// separate source READ for a suspected/possible candidate. The same
 			// window also appears in report.md's Source column for confirmed.
 			if ctx := o.candidateContext(pkg.VulnerabilityType, c); ctx != nil {
+				stats.record(pkg.VulnerabilityType, ctx, c.FunctionStartLine > 0 && c.FunctionEndLine >= c.FunctionStartLine)
 				b.WriteString("## Code Context\n\n")
 				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location (%s).\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line, ctx.reasonLabel())
 				if ctx.Note != "" {
@@ -324,6 +326,7 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 				b.WriteString(ctx.render())
 				b.WriteString("\n")
 			} else {
+				stats.record(pkg.VulnerabilityType, nil, false)
 				// An absent Code Context must be LOUD, not silent: the
 				// classifier would otherwise mistake "no source shown" for
 				// "no source semantics" and judge the candidate blind. The
@@ -391,6 +394,9 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			// a truncation-return accumulator), so it is embedded here rather than
 			// left to a repo-wide grep.
 			writeMacroDefinitions(&b, c, o)
+			stats.recordEmbeddings(pkg.VulnerabilityType,
+				c.CalleeDefFile != "" || c.SecondCalleeDefFile != "",
+				len(c.MacroDefs) > 0)
 
 			// The pipeline's verdict tokens, one line of the actual hit tokens.
 			// Their meanings live in the _index.md legend (or _legend.md when a
@@ -464,6 +470,7 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			}
 		}
 	}
+	o.contextStats = stats
 	return nil
 }
 
