@@ -211,8 +211,10 @@ it, before you look at the next type.
 read as a last resort for a cross-file body the pipeline could NOT embed.** The
 scan pre-embeds, for every candidate: the exact statement (`_index.md` `Source`
 column), the pipeline's verdict facts (`Hint` column + the candidate file's
-`## Pipeline Tokens` / `## Verdict Facts`), the `## Code Context` window (±8 for
-most types; the WHOLE function span for `integer-overflow`), the enclosing
+`## Pipeline Tokens` / `## Verdict Facts`), the `## Code Context` window (±20 for
+most types; the WHOLE function span for `integer-overflow` and for any small
+function — the header line names the extraction reason, e.g. `enclosing function`),
+the enclosing
 function's `## Location` signature, the referenced callee/helper's `## Callee
 Definition` body (unchecked-return / null-deref / double-free / integer-overflow,
 or any type whose candidate carries an in-scan callee), and every project macro
@@ -459,7 +461,7 @@ budget your effort, not to pre-judge the answer:
   fail-open assumption you verify or dismiss. For divide-by-zero, the
   `Hint` is `divisor@<shape>` (`bare` = plain identifier, `call` = call result,
   `compound` = complex expression, `field`/`global` = struct member / module
-  global): **EVERY shape — including `bare` and `field` — requires the ±8-line
+  global): **EVERY shape — including `bare` and `field` — requires the ±20-line
   Code Context before confirming**; the shape says where the divisor comes from,
   NOT whether it is guarded. Open the candidate's `Evidence` file (the filename
   is in `_index.md`'s `Evidence` column — use it verbatim) and read its

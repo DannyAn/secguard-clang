@@ -117,10 +117,11 @@ type EvidenceItem struct {
 	// + types), so the AI can read the operand types without a source READ.
 	Signature string `json:"signature,omitempty"`
 	// FunctionStartLine/FunctionEndLine are the enclosing function's body span
-	// (1-based, inclusive). integer-overflow renders the whole span in its Code
-	// Context ("signature → candidate, up to ~200 lines" — the promise
-	// command-instructions.md and agent-body.md make to the classifier); other
-	// types keep the ±8 local window around the reported line. 0 = span unknown.
+	// (1-based, inclusive). The report layer's layered Code Context (issue #330)
+	// embeds the WHOLE span for a candidate whose function is small enough
+	// (≤ maxFunctionContextLines) — and always for integer-overflow up to
+	// maxContextLines — otherwise it falls back to the ±20 local window. 0 =
+	// span unknown.
 	FunctionStartLine int `json:"function_start_line,omitempty"`
 	FunctionEndLine   int `json:"function_end_line,omitempty"`
 	// Contract carries the callee failure-contract provenance for an
@@ -338,7 +339,7 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 			// The size of a bounded memory function (memcpy/memmove/memset) is
 			// the decisive context: a compile-time-constant size is bounded
 			// (usually safe → dismiss from the row); a variable size needs the
-			// surrounding bound check (the Code Context ±8 lines shows it).
+			// surrounding bound check (the Code Context ±20 lines shows it).
 			if c.SizeHint != "" {
 				parts = append(parts, "size@"+c.SizeHint)
 				parts = append(parts, "size-kind@"+c.SizeKind)

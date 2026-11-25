@@ -39,7 +39,7 @@ func init() {
 			// The range engine's own conclusion for the surviving candidate:
 			// when it computed a tighter-than-top interval that still contains
 			// 0, saying so is the difference between the classifier judging
-			// reachability and re-deriving the interval from the ±8 window.
+			// reachability and re-deriving the interval from the ±20 window.
 			if c.DivisorInterval != "" {
 				frags = append(frags, EvidenceFragment{Type: "divisor_interval", Role: "condition", Detail: fmt.Sprintf("divisor %s interval is %s (includes 0)", c.VariableName, c.DivisorInterval)})
 			}

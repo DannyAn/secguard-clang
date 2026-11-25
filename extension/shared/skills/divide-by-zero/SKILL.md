@@ -22,7 +22,7 @@ A divide-by-zero candidate has:
 
 | Token | Meaning | Your action |
 |-------|---------|-------------|
-| `divisor@<shape>` | the divisor's syntactic shape (`bare`/`field`/`global`/`call`/`compound`) | **read the ±8-line Code Context before confirming, for EVERY shape.** The shape says where the value comes from, NOT whether it is guarded: the pipeline already dropped every divisor it could prove non-zero (constant symbol, interval, same-function guard), so a row that reached you means no modelled guard exists — and the unmodelled ones are exactly what the window shows (`if (n == 0) return;`, `if (n == 0 \|\| idx >= count) return;`, `if (!n) goto out;`, `if (n == 0) n = DEFAULT;`). Confirming from the `Source` column alone is how guarded divisions were filed as real defects |
+| `divisor@<shape>` | the divisor's syntactic shape (`bare`/`field`/`global`/`call`/`compound`) | **read the ±20-line Code Context before confirming, for EVERY shape.** The shape says where the value comes from, NOT whether it is guarded: the pipeline already dropped every divisor it could prove non-zero (constant symbol, interval, same-function guard), so a row that reached you means no modelled guard exists — and the unmodelled ones are exactly what the window shows (`if (n == 0) return;`, `if (n == 0 \|\| idx >= count) return;`, `if (!n) goto out;`, `if (n == 0) n = DEFAULT;`). Confirming from the `Source` column alone is how guarded divisions were filed as real defects |
 | `range@[lo,hi]` | the range engine's proved interval for the divisor — it contains 0 (else the filter would have dropped the row) | judge whether the 0 endpoint is actually reachable |
 | `callers@<summary>` | the direct call-site census for a parameter divisor | check the callers passing non-constants for a 0 argument |
 | `dividend@INT_MIN` | int_min_div (CWE-190): the dividend is provably INT_MIN and the divisor is provably -1 | a certain signed overflow — the pipeline auto-confirms it, so it never reaches you |
@@ -81,7 +81,7 @@ the embedded section and the indexed lookup.
 ### Common False Positives
 - `x / 100` — constant divisor (safe)
 - `x % sizeof(int)` — compile-time constant (safe)
-- A divisor that is checked before the division — `if (n == 0) return;`, `if (!n) goto out;`, `if (n == 0 || i >= count) return INVALID;`, `if (n == 0) n = DEFAULT;` — the guard is in the ±8-line window; when the pipeline does not model it (disjunctive forms, helper predicates), the row still reaches you as `suspected` and the window settles it
+- A divisor that is checked before the division — `if (n == 0) return;`, `if (!n) goto out;`, `if (n == 0 || i >= count) return INVALID;`, `if (n == 0) n = DEFAULT;` — the guard is in the ±20-line window; when the pipeline does not model it (disjunctive forms, helper predicates), the row still reaches you as `suspected` and the window settles it
 - A divisor reassigned to a provably non-zero constant before the division (`d = 0; d = 1; x / d`) — the convergence range flow proves it non-zero and suppresses it
 
 ### Fix Suggestions

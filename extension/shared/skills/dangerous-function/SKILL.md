@@ -24,7 +24,7 @@ A dangerous-function candidate has:
 |-------|---------|-------------|
 | `api@<fn>` | the banned function actually called | verify the Source really calls `<fn>`; a declaration/comment/`#define`/safe replacement is dismissed |
 | `size@<expr>` | the size argument of a bounded-memory call (`memcpy`/`memmove`/`memset`) | judge bounded vs the destination capacity |
-| `size-kind@<const\|var>` | const = compile-time size (usually safe, dismiss unless it provably exceeds the destination); var = the size must be checked against capacity | read the ±8 Code Context for the guard; do not read the whole file |
+| `size-kind@<const\|var>` | const = compile-time size (usually safe, dismiss unless it provably exceeds the destination); var = the size must be checked against capacity | read the ±20 Code Context for the guard; do not read the whole file |
 | `policy@<category>` | the banned-function policy category (`banned_function`/`obsolete_api` are POLICY violations — the call itself is the finding; `assert_usage` still needs intent judgment) | the verdict is policy-driven, not a memory-safety proof |
 
 ### Detection Logic
@@ -86,7 +86,7 @@ final verdict); you judge each row to a binary confirmed/dismissed verdict.
 | A call to a banned function (any category) | **judge** — the pipeline no longer auto-confirms; you judge the CONTEXT from the hint + Code Context (see below) |
 | `api@<fn>` where the function is UNBOUNDED (`strcpy`/`strcat`/`sprintf`/`vsprintf`/`gets`/`scanf`) | **confirmed** — no size argument, the function is dangerous by construction (unless the Source/Code Context shows a fixed, safe destination) |
 | `api@memcpy`/`memmove`/`memset` + `size-kind@const` | **dismiss** — a compile-time-constant size is bounded; only confirm when the constant provably exceeds the destination |
-| `api@memcpy`/`memmove`/`memset` + `size-kind@var` | **judge** the bound: read the embedded Code Context ±8 lines for the guard (`if (n > cap) return;`); confirm when the size is caller-controlled and unguarded, dismiss when guarded or the destination is clearly larger |
+| `api@memcpy`/`memmove`/`memset` + `size-kind@var` | **judge** the bound: read the embedded Code Context ±20 lines for the guard (`if (n > cap) return;`); confirm when the size is caller-controlled and unguarded, dismiss when guarded or the destination is clearly larger |
 | A call to `assert` (`assert_usage`) | **judge** — whether it guards caller input (defect) vs an internal invariant (fine) |
 | `policy@process_exit` (`abort` / `exit` / `_exit` / thread exit, non-entry) | **judge** — a coding-policy violation, not an exploitable security defect (issue #263): confirm at LOW when the guideline genuinely bans the call, dismiss when the context is the intended control flow (a fail-stop invariant branch the detector could not name-match); never HIGH |
 | A call to `inet_addr` (`obsolete_api_conditional`) | **judge** — its risk is conditional on the argument's provenance and the `INADDR_NONE` check: `dismiss` when the argument is not caller-controlled (an internal config field, an already-parsed protocol value, a constant) or when the result is tested against `INADDR_NONE` / `(in_addr_t)-1`; `confirm` when a caller-supplied string is converted and the sentinel is not checked |

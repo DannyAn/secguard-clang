@@ -258,6 +258,16 @@ type Scan struct {
 	//	[scan]
 	//	event_batch_size = 2000
 	EventBatchSize int `toml:"event_batch_size"`
+	// CandidateContextLines sets the L1 local source window embedded on each side
+	// of a candidate's reported line in its evidence file (the AI classifier's
+	// input). It is the base of the layered context model; the pipeline widens it
+	// on demand (whole function for a small function, source→sink span for
+	// decisive lines). 0 = default 20; a token-constrained deployment can dial it
+	// down. The findings/SARIF human-review window is the separate
+	// `--context-lines` flag.
+	//	[scan]
+	//	candidate_context_lines = 20
+	CandidateContextLines int `toml:"candidate_context_lines"`
 }
 
 // GraphBuildersConcurrencyOr returns the configured graph-builder parallelism,
@@ -888,6 +898,20 @@ func applyScanDefaults(c *Config) {
 	if c.Scan.EventBatchSize == 0 {
 		c.Scan.EventBatchSize = 2000
 	}
+	if c.Scan.CandidateContextLines == 0 {
+		c.Scan.CandidateContextLines = 20
+	}
+}
+
+// CandidateContextLines returns the configured candidate Code Context window
+// (lines per side). applyScanDefaults normalizes an unset 0 to the default 20,
+// so a loaded config always carries a positive value; a nil config returns the
+// default.
+func (c *Config) CandidateContextLines() int {
+	if c == nil {
+		return 20
+	}
+	return c.Scan.CandidateContextLines
 }
 
 // TrustedMacroNames returns the configured trusted-macro allowlist.

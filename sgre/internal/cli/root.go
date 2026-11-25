@@ -60,6 +60,10 @@ func Execute(ctx context.Context, args []string) int {
 		WriteErrorJSON(fmt.Sprintf("failed to load configuration: %v", err))
 		return 1
 	}
+	// The candidate evidence window (the AI classifier's input) is configurable
+	// via [scan] candidate_context_lines (default 20), separate from the
+	// findings/SARIF --context-lines window above.
+	report.CandidateContextLines = cfg.CandidateContextLines()
 	for _, n := range cfg.AllocatorNames() {
 		apikb.RegisterAllocator(n)
 	}

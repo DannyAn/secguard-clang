@@ -423,6 +423,14 @@ What it is:
     in COMPLETE-PROGRAM mode, which closes the boundary fail-open for
     parameters whose type layout is visible in-tree.
 
+    candidate_context_lines = 20
+    The L1 local source window (lines per side) embedded around each candidate
+    in its evidence file — the AI classifier's input. The pipeline widens it on
+    demand (whole function for a small function, source→sink span for decisive
+    lines); this is the base. Set it lower to cut classifier token cost, higher
+    for more local guard/reassignment context. The findings/SARIF window is the
+    separate --context-lines flag.
+
   [integer_overflow.truncating_wrappers] — bounded-return wrappers
     wrapper_name = <size_arg_index>
     Functions whose return value is bounded by one of their arguments (the
@@ -586,7 +594,12 @@ entry_points = [
 # kebab-case spellings are normalized, unknown names abort the scan with the
 # registered list). A skipped detector's downstream types read as 0 candidates
 # and the skip is recorded in the scan result — never mistaken for clean code.
-# skip_detectors = ["unchecked_return", "memory_leak"]`)
+# skip_detectors = ["unchecked_return", "memory_leak"]
+# The L1 local source window (lines per side) embedded around each candidate in
+# its evidence file — the AI classifier's input. The pipeline widens it on
+# demand (whole function for a small function, source→sink span for decisive
+# lines); this is the base. The findings/SARIF window is --context-lines.
+# candidate_context_lines = 20`)
 }
 
 // subcommandUsage maps a subcommand name to its usage printer. Execute uses this

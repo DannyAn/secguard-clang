@@ -41,6 +41,6 @@ func buildHardcodedSecretVerdictFacts(c Candidate) []VerdictFact {
 	}
 	return []VerdictFact{{
 		Token:  "value-shape@" + maskSecret(c.SecretValue),
-		Detail: "the literal's masked shape — judge from the prefix AND length, and read the ±8 Code Context for the full body: a placeholder (REPLACE…/CHANG…/xxxx…) or test value (test…) is dismissed; a real credential shape is confirmed. A PATTERNED body (a repeating/sequential run like `abcdef1234567890` repeated, `1111…`, `0000…`, `abcdabcd`) is a placeholder/test even when the prefix looks real (`sk-…`) — a real credential is not an obvious run, so dismiss those",
+		Detail: "the literal's masked shape — judge from the prefix AND length, and read the ±20 Code Context for the full body: a placeholder (REPLACE…/CHANG…/xxxx…) or test value (test…) is dismissed; a real credential shape is confirmed. A PATTERNED body (a repeating/sequential run like `abcdef1234567890` repeated, `1111…`, `0000…`, `abcdabcd`) is a placeholder/test even when the prefix looks real (`sk-…`) — a real credential is not an obvious run, so dismiss those",
 	}}
 }

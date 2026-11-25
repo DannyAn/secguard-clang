@@ -317,7 +317,7 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 			// window also appears in report.md's Source column for confirmed.
 			if ctx := o.candidateContext(pkg.VulnerabilityType, c); ctx != nil {
 				b.WriteString("## Code Context\n\n")
-				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location.\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line)
+				fmt.Fprintf(&b, "`%s:%d-%d` — line %d is the reported location (%s).\n\n", ctx.Path, ctx.StartLine, ctx.EndLine, ctx.Line, ctx.reasonLabel())
 				if ctx.Note != "" {
 					b.WriteString(ctx.Note)
 				}
@@ -467,38 +467,60 @@ func (o *ScanOutput) writeCandidates(packages []*planner.PlanResult) error {
 	return nil
 }
 
-// candidateContext resolves the Code Context region for one candidate.
-// Most types read a ±candidateContextLines window around the reported line,
-// but two span policies widen it:
+// maxFunctionContextLines is the L2 "cheap full function" budget: a candidate
+// whose enclosing function body spans at most this many lines embeds the WHOLE
+// function (signature → candidate) instead of the L1 local window, because a
+// function that small is cheap to show and showing it whole never truncates at
+// a function boundary. A larger function falls back to the L1 window + the
+// source→sink widening, so one candidate never turns into a function dump
+// (issue #330 §3 L2: "超长函数不能静默截断后仍标记为完整函数上下文").
+const maxFunctionContextLines = 60
+
+// candidateContext resolves the Code Context region for one candidate, in the
+// layered-context order (issue #330):
 //
-//   - integer-overflow embeds the WHOLE function span (signature → candidate)
-//     as command-instructions.md promises the classifier: its verdict needs the
-//     parameter types, the entry guard and the accumulation chain, none of
-//     which sit inside a ±8 window. A span longer than maxContextLines is
-//     truncated from the signature; when the candidate falls outside that
-//     truncated window the ±8 local window is used instead.
+//   - L2 full function: when the candidate maps to an enclosing function whose
+//     body span is known and the candidate line sits inside it, embed the whole
+//     function. integer-overflow keeps its documented whole-function promise up
+//     to maxContextLines; every other type gets the whole function only when it
+//     is cheap (≤ maxFunctionContextLines), otherwise it falls through to the
+//     decisive-span and local windows below. A truncated function is NEVER
+//     mislabeled as a complete one.
 //
-//   - a source→sink span (E-06): when a decisive source line (the free site of
-//     a use-after-free, the two frees of a double-free, the uninit declaration,
-//     the null/taint origin, the racing write) falls OUTSIDE the ±8 window, the
+//   - source→sink span (E-06): when a decisive source line (the free site of a
+//     use-after-free, the two frees of a double-free, the uninit declaration,
+//     the null/taint origin, the racing write) falls OUTSIDE the L1 window, the
 //     window widens to [min-3, max+3] over all decisive lines so the fragment's
 //     "free(p) at line N" is checkable in view rather than trusted. A span
 //     longer than maxContextLines stays on the local window — mostly padding,
 //     and the fragment's line number still directs a targeted READ.
 //
+//   - L1 local window: the fallback for every other producer, and the base the
+//     two span policies widen.
+//
 // An unknown span (0), a stale span, or a span the file cannot satisfy falls
-// back to the local window, so behavior is unchanged for every other producer.
+// back to the local window, so behavior is unchanged for every producer that
+// does not declare a function span or decisive source lines.
 func (o *ScanOutput) candidateContext(vulnType string, c planner.EvidenceItem) *codeContext {
 	local := func() *codeContext {
-		return readCodeContext(c.Target.File, c.Target.Line, candidateContextLines, o.RootDir)
+		ctx := readCodeContext(c.Target.File, c.Target.Line, CandidateContextLines, o.RootDir)
+		if ctx != nil {
+			ctx.Reason = "local window"
+		}
+		return ctx
 	}
-	if vulnType == "integer-overflow" && c.FunctionStartLine > 0 && c.FunctionEndLine >= c.FunctionStartLine {
+	if c.FunctionStartLine > 0 && c.FunctionEndLine >= c.FunctionStartLine {
 		start, end := c.FunctionStartLine, c.FunctionEndLine
-		if end-start+1 > maxContextLines {
-			end = start + maxContextLines - 1
+		budget := maxFunctionContextLines
+		if vulnType == "integer-overflow" {
+			budget = maxContextLines
+		}
+		if end-start+1 > budget {
+			end = start + budget - 1
 		}
 		if c.Target.Line >= start && c.Target.Line <= end {
 			if ctx := readCodeSpan(c.Target.File, start, end, c.Target.Line, o.RootDir); ctx != nil {
+				ctx.Reason = "enclosing function"
 				return ctx
 			}
 		}
@@ -506,6 +528,7 @@ func (o *ScanOutput) candidateContext(vulnType string, c planner.EvidenceItem) *
 	}
 	if lo, hi, ok := sourceSinkSpan(c); ok {
 		if ctx := readCodeSpan(c.Target.File, lo, hi, c.Target.Line, o.RootDir); ctx != nil {
+			ctx.Reason = "source→sink span"
 			return ctx
 		}
 	}
@@ -518,7 +541,7 @@ func (o *ScanOutput) candidateContext(vulnType string, c planner.EvidenceItem) *
 
 // sourceSinkTruncationNote names the decisive source lines that fell OUTSIDE
 // the local window when the source→sink span exceeded maxContextLines and the
-// window fell back to ±candidateContextLines. Without it the classifier sees
+// window fell back to ±CandidateContextLines. Without it the classifier sees
 // a window with no origin line in view and may dismiss the fragment's src@N
 // as unrelated.
 func sourceSinkTruncationNote(c planner.EvidenceItem) string {
@@ -534,7 +557,7 @@ func sourceSinkTruncationNote(c planner.EvidenceItem) string {
 		if ln > hi {
 			hi = ln
 		}
-		if ln < c.Target.Line-candidateContextLines || ln > c.Target.Line+candidateContextLines {
+		if ln < c.Target.Line-CandidateContextLines || ln > c.Target.Line+CandidateContextLines {
 			outside = true
 		}
 	}
@@ -552,7 +575,7 @@ func sourceSinkTruncationNote(c planner.EvidenceItem) string {
 	}
 	var outsideLines []string
 	for _, ln := range c.SourceLines {
-		if ln < c.Target.Line-candidateContextLines || ln > c.Target.Line+candidateContextLines {
+		if ln < c.Target.Line-CandidateContextLines || ln > c.Target.Line+CandidateContextLines {
 			outsideLines = append(outsideLines, strconv.Itoa(ln))
 		}
 	}
@@ -562,7 +585,7 @@ func sourceSinkTruncationNote(c planner.EvidenceItem) string {
 
 // sourceSinkSpan returns the widened [lo, hi] window covering the reported
 // line plus every decisive source line, and whether widening is warranted:
-// only when at least one decisive line sits outside the ±candidateContextLines
+// only when at least one decisive line sits outside the ±CandidateContextLines
 // window (inside it the plain window already shows it), and only when the
 // resulting span stays within maxContextLines.
 func sourceSinkSpan(c planner.EvidenceItem) (int, int, bool) {
@@ -578,7 +601,7 @@ func sourceSinkSpan(c planner.EvidenceItem) (int, int, bool) {
 		if ln > hi {
 			hi = ln
 		}
-		if ln < c.Target.Line-candidateContextLines || ln > c.Target.Line+candidateContextLines {
+		if ln < c.Target.Line-CandidateContextLines || ln > c.Target.Line+CandidateContextLines {
 			outside = true
 		}
 	}
@@ -596,13 +619,13 @@ func sourceSinkSpan(c planner.EvidenceItem) (int, int, bool) {
 	// The pre-B5 shape [min(src)-3, max(src)+3] left 42 lines before the sink
 	// but only 3 after, forcing a source re-read for exactly the lines the
 	// window should already show.
-	if floor := c.Target.Line - candidateContextLines; lo > floor {
+	if floor := c.Target.Line - CandidateContextLines; lo > floor {
 		lo = floor
 	}
 	if lo < 1 {
 		lo = 1
 	}
-	if ceiling := c.Target.Line + candidateContextLines; hi < ceiling {
+	if ceiling := c.Target.Line + CandidateContextLines; hi < ceiling {
 		hi = ceiling
 	}
 	if hi-lo+1 > maxContextLines {

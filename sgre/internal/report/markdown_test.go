@@ -373,8 +373,8 @@ func TestWriteCandidates_IntegerOverflowSignature(t *testing.T) {
 
 // E-01 regression: integer-overflow candidates embed the WHOLE function span
 // (signature → candidate) in Code Context — the promise command-instructions.md
-// makes to the classifier — instead of the ±8 local window. A candidate whose
-// span is unknown (0) keeps the ±8 window, so every other producer is unchanged.
+// makes to the classifier — instead of the local window. A candidate whose
+// span is unknown (0) keeps the local window, so every other producer is unchanged.
 func TestWriteCandidates_IntegerOverflowFunctionSpan(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "span.c")
@@ -424,7 +424,7 @@ func TestWriteCandidates_IntegerOverflowFunctionSpan(t *testing.T) {
 
 // E-01 regression, fallback half: a candidate whose line falls outside its
 // recorded span (stale index) or whose span exceeds maxContextLines with the
-// candidate beyond the truncated window keeps the ±8 local window, so the
+// candidate beyond the truncated window keeps the local window, so the
 // reported statement is always visible.
 func TestWriteCandidates_IntegerOverflowSpanFallback(t *testing.T) {
 	dir := t.TempDir()
@@ -443,7 +443,7 @@ func TestWriteCandidates_IntegerOverflowSpanFallback(t *testing.T) {
 
 	// A >maxContextLines function span whose candidate sits at line 204: the
 	// span truncates to [1,200] from the signature, so the candidate falls
-	// outside and must fall back to the ±8 window.
+	// outside and must fall back to the local window.
 	srcLong := filepath.Join(dir, "overlong.c")
 	var longLines []string
 	longLines = append(longLines, "#include <stdlib.h>")
@@ -483,7 +483,7 @@ func TestWriteCandidates_IntegerOverflowSpanFallback(t *testing.T) {
 	checkWindow := func(name string, file string, line, total int) {
 		t.Helper()
 		content := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "integer-overflow", name)))
-		wantStart, wantEnd := line-8, line+8
+		wantStart, wantEnd := line-CandidateContextLines, line+CandidateContextLines
 		if wantStart < 1 {
 			wantStart = 1
 		}
@@ -491,11 +491,92 @@ func TestWriteCandidates_IntegerOverflowSpanFallback(t *testing.T) {
 			wantEnd = total
 		}
 		if !strings.Contains(content, fmt.Sprintf("`%s:%d-%d`", file, wantStart, wantEnd)) {
-			t.Errorf("%s with unusable span should fall back to the ±8 window [%d,%d]:\n%s", name, wantStart, wantEnd, content)
+			t.Errorf("%s with unusable span should fall back to the local window [%d,%d]:\n%s", name, wantStart, wantEnd, content)
 		}
 	}
 	checkWindow(fmt.Sprintf("001_fallback_c_%d.md", candLine), src, candLine, totalLines)
 	checkWindow(fmt.Sprintf("002_overlong_c_%d.md", longCand), srcLong, longCand, longTotal)
+}
+
+// L2 (issue #330): a candidate whose enclosing function body is SMALL enough to
+// embed whole renders the full function (signature → candidate) instead of the
+// local window, and the header names the extraction reason ("enclosing
+// function") so the choice is traceable. A function larger than
+// maxFunctionContextLines falls back to the local window — it is never silently
+// truncated and relabeled as a complete function.
+func TestWriteCandidates_FullFunctionContextL2(t *testing.T) {
+	dir := t.TempDir()
+
+	// Small function (well under maxFunctionContextLines): full body shown.
+	small := filepath.Join(dir, "small.c")
+	smallBody := "int f(char *p) {\n    int n = 0;\n    p = get_ptr();\n    return p->x + n;\n}\n"
+	if err := os.WriteFile(small, []byte(smallBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Large function (> maxFunctionContextLines): local window only.
+	large := filepath.Join(dir, "large.c")
+	var lb strings.Builder
+	lb.WriteString("int g(char *p) {\n")
+	for i := 0; i < 70; i++ {
+		lb.WriteString("    pad();\n")
+	}
+	candLine := 72
+	lb.WriteString("    return p->x;\n}\n")
+	if err := os.WriteFile(large, []byte(lb.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := &ScanOutput{ScanDir: dir, ScanID: "sc_test", RootDir: dir}
+	pkgs := []*planner.PlanResult{{
+		VulnerabilityType: "null-deref",
+		Candidates: []planner.EvidenceItem{
+			{
+				SuspicionLevel:    "suspected",
+				NullOriginTier:    "malloc-fail",
+				FunctionStartLine: 1,
+				FunctionEndLine:   5,
+				Target:            planner.TargetInfo{File: "small.c", Function: "f", Line: 4, Variable: "p"},
+			},
+			{
+				SuspicionLevel:    "suspected",
+				NullOriginTier:    "malloc-fail",
+				FunctionStartLine: 1,
+				FunctionEndLine:   72,
+				Target:            planner.TargetInfo{File: "large.c", Function: "g", Line: candLine, Variable: "p"},
+			},
+		},
+	}}
+	if err := o.writeCandidates(pkgs); err != nil {
+		t.Fatal(err)
+	}
+
+	full := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "null-deref", "001_small_c_4.md")))
+	if !strings.Contains(full, fmt.Sprintf("`%s:1-5`", small)) {
+		t.Errorf("small function should embed the full span [1,5]:\n%s", full)
+	}
+	if !strings.Contains(full, "enclosing function") {
+		t.Errorf("full-function Code Context header must name the extraction reason:\n%s", full)
+	}
+	if !strings.Contains(full, "1 | int f(char *p) {") {
+		t.Errorf("full-function Code Context should include the signature line:\n%s", full)
+	}
+
+	local := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "null-deref", "002_large_c_"+strconv.Itoa(candLine)+".md")))
+	wantLo := candLine - CandidateContextLines
+	if wantLo < 1 {
+		wantLo = 1
+	}
+	wantHi := candLine + CandidateContextLines
+	if wantHi > 73 {
+		wantHi = 73
+	}
+	if !strings.Contains(local, fmt.Sprintf("`%s:%d-%d`", large, wantLo, wantHi)) {
+		t.Errorf("large function should fall back to the local window [%d,%d], not a truncated function:\n%s", wantLo, wantHi, local)
+	}
+	if strings.Contains(local, "1 | int g(char *p) {") {
+		t.Errorf("large function must NOT embed its signature (not a complete function):\n%s", local)
+	}
 }
 
 // E-03 regression: the Failure Contract section of a contract@unknown
@@ -603,7 +684,7 @@ func TestWriteCandidates_GenericCalleeDefinition(t *testing.T) {
 }
 
 // NC-06: when the source→sink span exceeds maxContextLines the window falls
-// back to ±8 — but the decisive source line then sits OUTSIDE the shown
+// back to local — but the decisive source line then sits OUTSIDE the shown
 // window with no visible note. The classifier must be told the window was
 // truncated and which line to read directly.
 func TestWriteCandidates_SourceSinkSpanTruncationNote(t *testing.T) {
@@ -765,7 +846,7 @@ func TestFixSuggestion_IntegerOverflowPerCategory(t *testing.T) {
 	}
 }
 
-// E-05 regression: a taint candidate whose source is more than ±8 lines from
+// E-05 regression: a taint candidate whose source is more than local lines from
 // the sink gets the origin statement rendered in its own section — the Code
 // Context window cannot contain it, so this section is the only in-file view
 // of the taint origin the classifier needs.
@@ -804,7 +885,7 @@ func TestWriteCandidates_TaintSourceSection(t *testing.T) {
 }
 
 // E-06 regression: when a decisive source line (the free site of a UAF, the
-// declaration of an uninit read, ...) sits outside the ±8 window, the Code
+// declaration of an uninit read, ...) sits outside the local window, the Code
 // Context widens to cover the whole source→sink span so the fragment's
 // "free(p) at line N" is checkable in view; a span longer than
 // maxContextLines falls back to the plain window.
@@ -852,10 +933,10 @@ func TestWriteCandidates_SourceSinkSpanWindow(t *testing.T) {
 	}
 
 	widened := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "use-after-free", "001_uaf_c_"+strconv.Itoa(useLine)+".md")))
-	// Symmetric around the sink: the standard ±8 window is the floor, so the
-	// end is useLine+8 (not the pre-B5 useLine+3 which truncated the sink's
-	// post-context).
-	wantLo, wantHi := freeLine-3, useLine+8
+	// Symmetric around the sink: the standard local window is the floor, so the
+	// end is useLine+CandidateContextLines (not the pre-B5 useLine+3 which
+	// truncated the sink's post-context).
+	wantLo, wantHi := freeLine-3, useLine+CandidateContextLines
 	if wantLo < 1 {
 		wantLo = 1
 	}
@@ -867,12 +948,12 @@ func TestWriteCandidates_SourceSinkSpanWindow(t *testing.T) {
 	}
 
 	plain := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "use-after-free", "002_uaf_c_"+strconv.Itoa(farUseSink)+".md")))
-	wantLo2, wantHi2 := farUseSink-8, farUseSink+8
+	wantLo2, wantHi2 := farUseSink-CandidateContextLines, farUseSink+CandidateContextLines
 	if wantHi2 > total {
 		wantHi2 = total
 	}
 	if !strings.Contains(plain, fmt.Sprintf("`%s:%d-%d`", src, wantLo2, wantHi2)) {
-		t.Errorf("overlong span: Code Context should fall back to the ±8 window [%d,%d]:\n%s", wantLo2, wantHi2, plain)
+		t.Errorf("overlong span: Code Context should fall back to the local window [%d,%d]:\n%s", wantLo2, wantHi2, plain)
 	}
 
 	near := mk(useLine, useLine-2)
@@ -882,9 +963,9 @@ func TestWriteCandidates_SourceSinkSpanWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	nearMd := string(mustReadFile(t, filepath.Join(dir, CandidatesDir, "use-after-free", "001_uaf_c_"+strconv.Itoa(useLine)+".md")))
-	nearLo, nearHi := useLine-8, useLine+8
+	nearLo, nearHi := useLine-CandidateContextLines, useLine+CandidateContextLines
 	if !strings.Contains(nearMd, fmt.Sprintf("`%s:%d-%d`", src, nearLo, nearHi)) {
-		t.Errorf("near source: Code Context should stay the ±8 window [%d,%d]:\n%s", nearLo, nearHi, nearMd)
+		t.Errorf("near source: Code Context should stay the local window [%d,%d]:\n%s", nearLo, nearHi, nearMd)
 	}
 }
 
