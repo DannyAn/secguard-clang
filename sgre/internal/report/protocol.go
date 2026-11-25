@@ -95,6 +95,16 @@ type ScanOutput struct {
 	ReportPath          string
 	ScanID              string
 	ScanMode            string
+	// contextStats accumulates the context-assembly telemetry across the
+	// candidate write; it is populated by Write and exposed via ContextStats().
+	contextStats ContextStats
+}
+
+// ContextStats returns the context-assembly telemetry recorded by the last
+// Write (empty before a Write). The scan envelope surfaces its summary; the
+// full per-type breakdown lives in the scan dir's context-stats.json sidecar.
+func (o *ScanOutput) ContextStats() ContextStats {
+	return o.contextStats
 }
 
 func generateScanID() string {
@@ -195,6 +205,10 @@ func (o *ScanOutput) Write(packages []*planner.PlanResult, indexSummary IndexSum
 
 	if err := o.writeCandidates(packages); err != nil {
 		return fmt.Errorf("write candidate evidence: %w", err)
+	}
+
+	if err := o.writeContextStats(o.contextStats); err != nil {
+		return fmt.Errorf("write context stats: %w", err)
 	}
 
 	return nil
