@@ -98,3 +98,26 @@ func TestSwitchFallthrough_Tiers(t *testing.T) {
 		}
 	}
 }
+
+func TestSwitchFallthrough_UnhandledStatePlan(t *testing.T) {
+	res := planNewType(t, "tc173_switch_unhandled.c", "switch-fallthrough")
+	byFunc := map[string]string{}
+	for _, c := range res.Candidates {
+		byFunc[c.Target.Function] = c.Category
+	}
+	for _, fn := range []string{"fw01_state_machine_loop", "fw02_parse_loop", "md03_result_unset", "md04_empty_default", "md05_error_code"} {
+		if byFunc[fn] != "missing_default" {
+			t.Errorf("%s: expected missing_default candidate, got %q", fn, byFunc[fn])
+		}
+	}
+	for _, fn := range []string{"md10_effective_default", "md11_full_enum_covered", "md12_no_downstream", "md13_loop_unrelated", "md14_int_switch_no_state"} {
+		if _, ok := byFunc[fn]; ok {
+			t.Errorf("%s: must NOT be a candidate", fn)
+		}
+	}
+	for _, c := range res.Candidates {
+		if c.SuspicionLevel != "suspected" {
+			t.Errorf("%s: expected suspected, got %q", c.Target.Function, c.SuspicionLevel)
+		}
+	}
+}

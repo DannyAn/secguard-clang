@@ -689,6 +689,15 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				if c.EnumCoverage != "" {
 					parts = append(parts, "enum@"+c.EnumCoverage)
 				}
+				if c.Reason != "" {
+					parts = append(parts, "unhandled@"+c.Reason)
+				}
+				if c.StateVars != "" {
+					parts = append(parts, "state@"+c.StateVars)
+				}
+				if c.DefaultKind != "" {
+					parts = append(parts, "default@"+c.DefaultKind)
+				}
 			} else {
 				parts = append(parts, "fall@yes")
 				parts = append(parts, "comment@none")
@@ -707,6 +716,22 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				parts = append(parts, "alloc_size@"+c.VariableName)
 			}
 			parts = append(parts, "guard@none-upper")
+		case "loop-bound":
+			if c.LoopKind != "" {
+				parts = append(parts, "loop-kind@"+c.LoopKind)
+			}
+			if c.LoopVar != "" {
+				parts = append(parts, "loop-var@"+c.LoopVar)
+			}
+			if c.LoopBound != "" {
+				parts = append(parts, "loop-bound@"+compactHintValue(c.LoopBound))
+			}
+			if c.Category == "unchecked_input_bound" {
+				if c.LoopBoundKind != "" {
+					parts = append(parts, "bound-src@"+c.LoopBoundKind)
+				}
+				parts = append(parts, "guard@none-upper")
+			}
 		case "loop-termination":
 			// The verdict basis: the loop construct, the exit condition, and the
 			// progress variable that must advance, plus the specific no-progress

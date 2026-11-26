@@ -217,6 +217,12 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "len-sink@", Display: "len-sink@<fn>:<line>", Description: "unbounded-length-copy: the length reaches {value} as an allocation/copy size argument"},
 	{Key: "alloc_size@", Display: "alloc_size@<var>", Description: "unbounded-length-copy: the variable carrying the externally-sourced length: {value}"},
 
+	// ---- loop-bound ----
+	{Key: "loop-kind@", Display: "loop-kind@<for|while|do>", Description: "the loop construct: {value} (for loop-bound it is the loop whose bound is reported; for loop-termination the loop whose exit can stall)"},
+	{Key: "loop-var@", Display: "loop-var@<name>", Description: "the loop induction variable: {value} (the LHS of the ascending condition `var < bound`)"},
+	{Key: "loop-bound@", Display: "loop-bound@<expr>", Description: "the loop's upper-bound expression: {value} — for `unchecked_input_bound` this is the external value that controls the iteration count; for `bound_mul` it is an overflow-prone product"},
+	{Key: "bound-src@", Display: "bound-src@<param|taint>", Description: "where the loop bound originates: {value} — `param` = a function parameter (a caller supplies the count), `taint` = a local assigned from an external-input source (recv/read/fscanf/getenv/…). The iteration count is not statically bounded, so judge whether the caller/source can supply a large value (confirm) or a business/protocol constraint bounds it (dismiss)"},
+
 	// ---- stack-address-escape ----
 	{Key: "object@", Display: "object@<name>", Description: "the non-static local whose address escapes: {value} — the pipeline already ruled out static storage, so a non-static local's frame dies at return"},
 	{Key: "static@", Display: "static@<no|yes>", Description: "the local's storage class: {value} — `no` (auto) is the only shape the pipeline reports (a static local's storage outlives the frame, so it is exempted at the detector); the fact is surfaced so the classifier does not re-derive it"},
@@ -230,6 +236,9 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "comment@none", Description: "no exemption comment (`fall through` / `fallthrough`) sits between this case and the next — the pipeline already suppressed the documented-intent cases"},
 	{Key: "case_end@", Display: "case_end@<kind>", Description: "the switch case's last statement kind: {value} — it does not break/return/goto, so the fallthrough is structural"},
 	{Key: "enum@", Display: "enum@<name>(covered N/M)", Description: "the switch condition's enum type and coverage: {value} — not every enumerator is covered and there is no default; judge whether the uncovered members are unreachable (dismiss) or a real missing handler (confirm)"},
+	{Key: "unhandled@", Display: "unhandled@<enum_gap|loop_progress|unhandled_state>", Description: "the CWE-478 missing_default sub-shape: {value} — enum_gap = an enum enumerator is uncovered with no default; loop_progress = a value the switch updates is read by the enclosing loop's continuation, so a missing case can stall the loop; unhandled_state = a state/status/type/error selector writes a variable consumed downstream with no effective default"},
+	{Key: "state@", Display: "state@<v1,v2,...>", Description: "the state variables the switch writes that are consumed after the switch: {value} — an unhandled value leaves them stale or unset"},
+	{Key: "default@", Display: "default@<none|empty>", Description: "the switch's default handling: {value} — `none` = no default; `empty` = a default whose body is a no-op (comment / `;` / bare break/continue), which does not handle the unknown value either"},
 
 	// ---- implicit-contract / sizeof-misuse ----
 	{Key: "subject@", Display: "subject@<name>", Description: "the entity the contract/judgment is about: {value} (the struct-pointer parameter for implicit-contract, the sizeof operand for sizeof-misuse)"},
@@ -240,7 +249,6 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "shape-cluster@", Display: "shape-cluster@<N>", Description: "shape-level clustering folded {value} other same-file site(s) of the same defect shape into this candidate — for implicit-contract the shape is the field, access form, evidence tier and guard structure; for buffer-overflow/out-of-bounds it is the index-source field, array capacity and access flavor. One verdict covers the whole family; the folded `function:line` sites are listed under `## Clustered Sites` in this evidence file"},
 
 	// ---- loop-termination ----
-	{Key: "loop-kind@", Display: "loop-kind@<while|for|do>", Description: "the loop construct whose termination is at issue: {value}"},
 	{Key: "exit-cond@", Display: "exit-cond@<expr>", Description: "the loop's exit condition: {value} — the predicate that must eventually become false"},
 	{Key: "progress@", Display: "progress@<var>", Description: "the exit-condition variable that must advance: {value}"},
 	{Key: "no-write", Description: "the progress variable is never assigned or updated in the loop body/update clause, and there is no break/return/goto alternative exit — if the loop is entered the condition can never change"},

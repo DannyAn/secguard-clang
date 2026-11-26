@@ -149,12 +149,12 @@ func TestAllCWEs_ContainsAll20CanonicalCWEs(t *testing.T) {
 
 func TestAllCWEs_CountIs25CanonicalPlus3LegacyPlus4CategoryCWEs(t *testing.T) {
 	cwes := AllCWEs()
-	// 31 canonical + 4 legacy (CWE-89, CWE-326, CWE-338, CWE-762) + 9 category
-	// CWEs (CWE-88, CWE-91, CWE-93, CWE-117, CWE-478, CWE-758, CWE-732, and
-	// CWE-484 deduped with switch-fallthrough's canonical, plus CWE-754 for
-	// buffer-overflow's secure_constraint_violation) = 42.
-	if len(cwes) != 42 {
-		t.Errorf("AllCWEs() has %d entries, want 42 (31 canonical + 4 legacy + 9 category CWEs)", len(cwes))
+	// 32 canonical + 4 legacy (CWE-89, CWE-326, CWE-338, CWE-762) + 8 category
+	// CWEs (CWE-88, CWE-91, CWE-93, CWE-117, CWE-478, CWE-758, CWE-732, CWE-754)
+	// + CWE-606 (loop-bound's unchecked_input_bound) = 44. CWE-484 and CWE-834
+	// dedupe with their type's canonical CWE.
+	if len(cwes) != 44 {
+		t.Errorf("AllCWEs() has %d entries, want 44 (32 canonical + 4 legacy + 8+1 category CWEs)", len(cwes))
 	}
 }
 

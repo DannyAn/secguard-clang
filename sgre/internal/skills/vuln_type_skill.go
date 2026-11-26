@@ -84,6 +84,7 @@ var allSkillSpecs = []skillSpec{
 	{"invalid-free", "memory", "Detects deallocator calls on non-heap objects: stack/global arrays, mid-array and offset pointers (CWE-761)"},
 	{"switch-fallthrough", "control", "Detects switch fallthrough and missing enum default (CWE-484/478)"},
 	{"unbounded-length-copy", "boundary", "Detects an externally-sourced length flowing into an allocation/copy size with no upper-bound guard (CWE-1284)"},
+	{"loop-bound", "control", "Detects loops whose iteration bound is externally-controlled or overflow-prone (CWE-606/834)"},
 	{"loop-termination", "control", "Detects loops whose exit condition cannot progress: never-written exit variable, no-op update, or a continue that skips the update (CWE-835)"},
 }
 

@@ -556,6 +556,14 @@ type Candidate struct {
 	// EnumCoverage is the enum name + coverage summary for a switch-fallthrough
 	// missing_default candidate (e.g. "Color (covered 2/3)").
 	EnumCoverage string `json:"enum_coverage,omitempty"`
+	// Reason is the CWE-478 missing_default sub-shape: enum_gap / loop_progress /
+	// unhandled_state.
+	Reason string `json:"reason,omitempty"`
+	// StateVars is the comma-joined list of state variables the switch writes
+	// that are consumed downstream (a missing default leaves them stale).
+	StateVars string `json:"state_vars,omitempty"`
+	// DefaultKind is how the switch handles an unknown value: none / empty.
+	DefaultKind string `json:"default,omitempty"`
 	// ShiftCount/ShiftWidth/ShiftBase carry the integer-overflow shift-UB
 	// evidence: the shift count label (e.g. "40>=32" or "-1"), the operand bit
 	// width, and the shifted operand's kind ("signed-literal").
@@ -564,13 +572,22 @@ type Candidate struct {
 	ShiftBase  string `json:"shift_base,omitempty"`
 	// Mode is the chmod/fchmod permission_setting mode argument (e.g. "0666").
 	Mode string `json:"mode,omitempty"`
-	// LoopKind/LoopCondition/ProgressLine carry the loop-termination evidence:
-	// the loop construct ("while"/"for"/"do"), its exit condition text, and the
-	// line of the no-op update (zero_step) or the bypassing continue
-	// (continue_bypass).
-	LoopKind      string `json:"loop_kind,omitempty"`
+	// LoopKind is the loop construct of a loop-bound/loop-termination candidate:
+	// "for" / "while" / "do".
+	LoopKind string `json:"loop_kind,omitempty"`
+	// LoopVar is the loop induction variable name (e.g. "i" in `i < count`).
+	LoopVar string `json:"loop_var,omitempty"`
+	// LoopBound is the loop's upper-bound expression (e.g. "count", "n * m").
+	LoopBound string `json:"loop_bound,omitempty"`
+	// LoopBoundKind classifies the bound's origin: "param" (a function
+	// parameter), "taint" (a local assigned from an external-input source),
+	// "const" (a literal), "local" / "call" / "compound" (unproven origins).
+	LoopBoundKind string `json:"loop_bound_kind,omitempty"`
+	// LoopCondition is the loop-termination candidate's exit-condition text.
 	LoopCondition string `json:"loop_condition,omitempty"`
-	ProgressLine  int    `json:"progress_line,omitempty"`
+	// ProgressLine is the line of the no-op update (zero_step) or the bypassing
+	// continue (continue_bypass) of a loop-termination candidate.
+	ProgressLine int `json:"progress_line,omitempty"`
 }
 
 // CallSiteInfo is one in-tree call site of a parameter, as the callsite census

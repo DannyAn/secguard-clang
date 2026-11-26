@@ -15,8 +15,10 @@ metadata:
 A switch-fallthrough candidate has:
 - **switch_flow**: the fallthrough site or the missing-default switch, with
   category `fallthrough` (a non-empty case whose last statement does not
-  terminate) or `missing_default` (an enum switch that does not cover every
-  enumerator and has no default)
+  terminate) or `missing_default` (a switch that does not effectively handle an
+  unknown value — either an enum switch that does not cover every enumerator,
+  or a state/status/type/error dispatch whose unhandled value leaves downstream
+  state stale)
 - **call_path**: The function is reachable from an entry point
 
 ### Hint Tokens (Verdict Basis)
@@ -27,22 +29,32 @@ A switch-fallthrough candidate has:
 | `comment@none` | no exemption comment sits between this case and the next | the pipeline already suppressed documented fallthroughs |
 | `case_end@<kind>` | the case's last statement kind | it does not break/return/goto, so the fallthrough is structural |
 | `enum@<name>(covered N/M)` | the enum type and its coverage | not every enumerator is covered and there is no default |
+| `unhandled@<enum_gap\|loop_progress\|unhandled_state>` | the CWE-478 sub-shape | enum_gap = uncovered enumerator; loop_progress = a written variable is read by the enclosing loop's continuation; unhandled_state = a state/status/type/error selector writes a variable consumed downstream |
+| `state@<v1,v2,...>` | the state variables the switch writes that are read after it | an unhandled value leaves them stale/unset — judge whether that value can reach the switch |
+| `default@<none\|empty>` | how the switch handles an unknown value | `none` = no default; `empty` = a no-op default (comment/`;`/bare break), which does not handle it either |
 
-Both shapes are heuristics — the pipeline never auto-confirms them. A
-`fall@yes` row needs the `## Code Context` to judge whether the next case is an
-independent semantic action (confirm) or the same-action continuation of a
-ladder (dismiss). An `enum@` row needs you to judge whether the uncovered
-members are genuinely unreachable (dismiss) or an externally-controllable value
-with no handler (confirm).
+All missing-default shapes are heuristics — the pipeline never auto-confirms
+them. A `fall@yes` row needs the `## Code Context` to judge whether the next
+case is an independent semantic action (confirm) or the same-action
+continuation of a ladder (dismiss). An `enum@`/`unhandled@` row needs you to judge
+whether the uncovered/unhandled value is genuinely unreachable or
+validated-upstream (dismiss) or an externally-controllable value with no handler
+(confirm). A `unhandled@loop_progress` row also carries the CWE-835 angle: if the
+loop genuinely cannot advance, that non-termination finding belongs to the loop
+termination analysis; this row explains the unhandled-state root cause.
 
 ### Detection Logic
 1. For each `switch_statement`, iterate its `case_statement` children in order
 2. A case whose body is non-empty and whose last statement is not
    break/continue/return/goto/noreturn-call, with no `fall through`-style
    comment before the next case, is emitted as `fallthrough`
-3. A switch whose condition resolves to an enum type, that covers fewer than all
-   enumerators and has no default, is emitted as `missing_default`
-4. Emit `SWITCH_FLOW`; both categories are suspected
+3. An enum switch that covers fewer than all non-sentinel enumerators and has no
+   default is emitted as `missing_default` (`unhandled@enum_gap`)
+4. A switch whose default is absent or a no-op, that (a) updates a variable the
+   enclosing loop's continuation reads (`unhandled@loop_progress`) or (b) dispatches
+   on a state/status/type/error/enum selector and writes a variable consumed
+   downstream (`unhandled@unhandled_state`), is emitted as `missing_default`
+5. Emit `SWITCH_FLOW`; both categories are suspected
 
 ### Evidence closure (read before any source read)
 
@@ -61,9 +73,12 @@ the embedded section and the indexed lookup.
 |-----------|---------------|
 | `fall@yes` + `comment@none` and the next case is an independent semantic action (a command code / message type, not a continuation) | **confirmed** |
 | `enum@<name>(covered N/M)` and the uncovered members are externally-controllable with no handler | **confirmed** |
+| `unhandled@loop_progress` and the unhandled value can actually reach the switch, so the loop's progress variable can stay stale | **confirmed** |
+| `unhandled@unhandled_state` and the selector value is externally-controllable (network packet type / error code / state), leaving a downstream state/result variable stale or unset | **confirmed** |
 | a same-semantic ladder (e.g. accumulating bits through consecutive cases) | **dismissed** |
-| the enum switch's input is normalized/validated upstream, or the uncovered members are unreachable | **dismissed** |
-| an EXEMPTION MARKER the detector recognises — an exact-prefix comment (`/* fall through */`, `// fallthrough`), or an int (non-enum) switch without default | **false-positive** (the detector never emits it) |
+| the switch's input is normalized/validated upstream, or the uncovered/unhandled values are unreachable, or the written variable is re-assigned before any downstream use | **dismissed** |
+| a `default` that effectively handles the unknown value (returns an error / resets state / aborts) — the detector never emits `missing_default` when the default is effective | **false-positive** |
+| an EXEMPTION MARKER the detector recognises — an exact-prefix comment (`/* fall through */`, `// fallthrough`) | **false-positive** (the detector never emits it) |
 | a comment the detector does NOT recognise as an exemption (a non-prefix phrase like `/* deliberately fall through to default */`) or an attribute/macro idiom (`[[fallthrough]]`, `__attribute__((fallthrough))`, bare `fallthrough;`) | still reaches you as **suspected** — judge intent, do NOT assume it was exempted |
 
 The pipeline has already applied the comment exemption and the int-switch
@@ -72,10 +87,15 @@ the deciding question is whether the two cases are independent semantic actions.
 
 ### Common False Positives
 - A fallthrough ladder where the cases are consecutive refinements of one action
-- An enum switch whose input is validated upstream (the missing members cannot
-  reach the switch)
-- A `default` that already exists (the detector never emits `missing_default`
-  when a default is present, even an empty one)
+- A switch whose input is validated upstream (the missing/unhandled values
+  cannot reach the switch)
+- A `default` that already effectively handles the unknown value (the detector
+  never emits `missing_default` when the default returns/aborts/resets state)
+- A switch that writes no downstream state, or whose written variable is
+  re-assigned before it is consumed — an unhandled value has no observable
+  impact
+- An enum switch whose sentinel/count enumerators (`*_MAX`, `*_COUNT`, `*_NUM`,
+  `*_SIZE`, `*_END`, `*_LAST`) are excluded from the coverage requirement
 
 ### Fix Suggestions
 
@@ -99,6 +119,22 @@ case CMD_A: x = 1; case CMD_B: use(x);
 
 // DISMISSED — a documented fallthrough ladder (the marker suppresses it)
 case CMD_A: x |= 1; /* fall through */ case CMD_B: x |= 2;
+
+// CONFIRMED (unhandled@loop_progress) — an unhandled state leaves the loop stuck
+while (state != STATE_DONE) {
+    switch (state) {
+    case STATE_RECV:    state = receive(); break;
+    case STATE_PROCESS: state = STATE_RECV; break;
+    }   // no default: an unknown state never advances
+}
+
+// CONFIRMED (unhandled@unhandled_state) — an unhandled message type leaves result stale
+int result = 0;
+switch (msg_type) {
+case MSG_A: result = handle_a(); break;
+case MSG_B: result = handle_b(); break;
+}   // no default: an unknown message type leaves result 0
+return result;
 ```
 
 ### Severity Matrix

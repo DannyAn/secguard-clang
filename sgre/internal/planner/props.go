@@ -333,6 +333,13 @@ type eventProps struct {
 	// EnumCoverage is the enum name + coverage summary for a switch-fallthrough
 	// missing_default candidate (e.g. "Color (covered 2/3)").
 	EnumCoverage string `json:"enum_coverage"`
+	// Reason (already declared above) doubles as the CWE-478 missing_default
+	// sub-shape: enum_gap / loop_progress / unhandled_state.
+	// StateVars is the comma-joined list of state variables the switch writes
+	// that are consumed downstream (a missing default leaves them stale).
+	StateVars string `json:"state_vars"`
+	// DefaultKind is how the switch handles an unknown value: none / empty.
+	DefaultKind string `json:"default"`
 	// ShiftCount/ShiftWidth/ShiftBase carry the integer-overflow shift-UB
 	// evidence: the shift count label (e.g. "40>=32" or "-1"), the operand bit
 	// width, and the shifted operand's kind ("signed-literal").
@@ -341,11 +348,18 @@ type eventProps struct {
 	ShiftBase  string `json:"shift_base"`
 	// Mode is the chmod/fchmod permission_setting mode argument (e.g. "0666").
 	Mode string `json:"mode"`
-	// LoopKind/LoopCondition/ProgressLine carry the loop-termination evidence:
-	// the loop construct ("while"/"for"/"do"), its exit condition text, and the
-	// line of the no-op update (zero_step) or the bypassing continue
-	// (continue_bypass).
-	LoopKind      string  `json:"loop_kind"`
+	// LoopKind is the loop construct of a loop-bound/loop-termination event:
+	// "for" / "while" / "do".
+	LoopKind string `json:"loop_kind"`
+	// LoopVar/LoopBound/LoopBoundKind carry the loop-bound evidence: the
+	// induction variable, the upper-bound expression and its origin
+	// (param/taint/const/local/call/compound).
+	LoopVar       string `json:"loop_var"`
+	LoopBound     string `json:"loop_bound"`
+	LoopBoundKind string `json:"loop_bound_kind"`
+	// LoopCondition/ProgressLine carry the loop-termination evidence: the exit
+	// condition text and the line of the no-op update (zero_step) or the
+	// bypassing continue (continue_bypass).
 	LoopCondition string  `json:"loop_condition"`
 	ProgressLine  flexInt `json:"progress_line"`
 }
