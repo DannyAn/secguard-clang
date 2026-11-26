@@ -48,6 +48,7 @@ var defaultSeverityByType = map[string]string{
 	"signed-compare":      "medium",
 	"switch-fallthrough":  "medium",
 	"loop-bound":          "medium",
+	"loop-termination":    "medium",
 
 	// LOW — robustness / style.
 	"unchecked-return": "low",

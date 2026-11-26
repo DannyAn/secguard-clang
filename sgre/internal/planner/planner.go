@@ -706,6 +706,8 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			LoopVar:                 props.LoopVar,
 			LoopBound:               props.LoopBound,
 			LoopBoundKind:           props.LoopBoundKind,
+			LoopCondition:           props.LoopCondition,
+			ProgressLine:            int(props.ProgressLine),
 		})
 	}
 

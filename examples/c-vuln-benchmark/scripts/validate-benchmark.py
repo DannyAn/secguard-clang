@@ -149,6 +149,7 @@ CWE_TO_TYPE = {
     "CWE-1284": "unbounded-length-copy",
     "CWE-834": "loop-bound",
     "CWE-606": "loop-bound",
+    "CWE-835": "loop-termination",
 }
 
 
