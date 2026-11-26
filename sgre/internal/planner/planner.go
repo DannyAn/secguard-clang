@@ -699,6 +699,10 @@ func (p *Planner) seedCandidatesByType(ctx context.Context, spec *VulnTypeSpec) 
 			ShiftWidth:              props.ShiftWidth,
 			ShiftBase:               props.ShiftBase,
 			Mode:                    props.Mode,
+			LoopKind:                props.LoopKind,
+			LoopVar:                 props.LoopVar,
+			LoopBound:               props.LoopBound,
+			LoopBoundKind:           props.LoopBoundKind,
 		})
 	}
 

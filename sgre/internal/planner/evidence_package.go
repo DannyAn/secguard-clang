@@ -707,6 +707,22 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				parts = append(parts, "alloc_size@"+c.VariableName)
 			}
 			parts = append(parts, "guard@none-upper")
+		case "loop-bound":
+			if c.LoopKind != "" {
+				parts = append(parts, "loop-kind@"+c.LoopKind)
+			}
+			if c.LoopVar != "" {
+				parts = append(parts, "loop-var@"+c.LoopVar)
+			}
+			if c.LoopBound != "" {
+				parts = append(parts, "loop-bound@"+compactHintValue(c.LoopBound))
+			}
+			if c.Category == "unchecked_input_bound" {
+				if c.LoopBoundKind != "" {
+					parts = append(parts, "bound-src@"+c.LoopBoundKind)
+				}
+				parts = append(parts, "guard@none-upper")
+			}
 		case "implicit-contract":
 			if c.Subject != "" {
 				parts = append(parts, "subject@"+c.Subject)

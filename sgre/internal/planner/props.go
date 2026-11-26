@@ -341,6 +341,13 @@ type eventProps struct {
 	ShiftBase  string `json:"shift_base"`
 	// Mode is the chmod/fchmod permission_setting mode argument (e.g. "0666").
 	Mode string `json:"mode"`
+	// LoopKind/LoopVar/LoopBound/LoopBoundKind carry the loop-bound evidence:
+	// the loop construct, the induction variable, the upper-bound expression and
+	// its origin (param/taint/const/local/call/compound).
+	LoopKind      string `json:"loop_kind"`
+	LoopVar       string `json:"loop_var"`
+	LoopBound     string `json:"loop_bound"`
+	LoopBoundKind string `json:"loop_bound_kind"`
 }
 
 func parseEventProps(raw string) eventProps {

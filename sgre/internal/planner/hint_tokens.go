@@ -217,6 +217,12 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "len-sink@", Display: "len-sink@<fn>:<line>", Description: "unbounded-length-copy: the length reaches {value} as an allocation/copy size argument"},
 	{Key: "alloc_size@", Display: "alloc_size@<var>", Description: "unbounded-length-copy: the variable carrying the externally-sourced length: {value}"},
 
+	// ---- loop-bound ----
+	{Key: "loop-kind@", Display: "loop-kind@<for|while|do>", Description: "the loop construct whose bound is reported: {value}"},
+	{Key: "loop-var@", Display: "loop-var@<name>", Description: "the loop induction variable: {value} (the LHS of the ascending condition `var < bound`)"},
+	{Key: "loop-bound@", Display: "loop-bound@<expr>", Description: "the loop's upper-bound expression: {value} — for `unchecked_input_bound` this is the external value that controls the iteration count; for `bound_mul` it is an overflow-prone product"},
+	{Key: "bound-src@", Display: "bound-src@<param|taint>", Description: "where the loop bound originates: {value} — `param` = a function parameter (a caller supplies the count), `taint` = a local assigned from an external-input source (recv/read/fscanf/getenv/…). The iteration count is not statically bounded, so judge whether the caller/source can supply a large value (confirm) or a business/protocol constraint bounds it (dismiss)"},
+
 	// ---- stack-address-escape ----
 	{Key: "object@", Display: "object@<name>", Description: "the non-static local whose address escapes: {value} — the pipeline already ruled out static storage, so a non-static local's frame dies at return"},
 	{Key: "static@", Display: "static@<no|yes>", Description: "the local's storage class: {value} — `no` (auto) is the only shape the pipeline reports (a static local's storage outlives the frame, so it is exempted at the detector); the fact is surfaced so the classifier does not re-derive it"},
