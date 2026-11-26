@@ -689,6 +689,15 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				if c.EnumCoverage != "" {
 					parts = append(parts, "enum@"+c.EnumCoverage)
 				}
+				if c.Reason != "" {
+					parts = append(parts, "unhandled@"+c.Reason)
+				}
+				if c.StateVars != "" {
+					parts = append(parts, "state@"+c.StateVars)
+				}
+				if c.DefaultKind != "" {
+					parts = append(parts, "default@"+c.DefaultKind)
+				}
 			} else {
 				parts = append(parts, "fall@yes")
 				parts = append(parts, "comment@none")

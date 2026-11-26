@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/DannyAn/secguard-clang/internal/apikb"
@@ -103,20 +104,45 @@ func (d *SwitchFlowDetector) Detect(ctx context.Context) (DetectResult, error) {
 				}
 			}
 
-			// missing_default
-			if enumName, ok := switchEnumCondition(sw, globals, scopes, fn, typedefs); ok {
-				members := enums[enumName]
-				if len(members) == 0 {
-					continue
+			// missing_default (CWE-478)
+			enumName, isEnum := switchEnumCondition(sw, globals, scopes, fn, typedefs)
+			cond := switchCondition(sw)
+			emitted := false
+
+			// Precise enum coverage gap: an enum switch that does not cover every
+			// non-sentinel enumerator and has no default at all. This is the one
+			// machine-checkable shape (the domain is the enumerator list).
+			if isEnum {
+				if members := nonSentinelEnumerators(enums[enumName]); len(members) > 0 {
+					covered := coveredEnumMembers(body, members)
+					if len(covered) < len(members) && !hasDefault(body) {
+						d.emit(ctx, fn.ID, file, cond, "missing_default", map[string]string{
+							"reason":        "enum_gap",
+							"enum_coverage": fmt.Sprintf("%s (covered %d/%d)", enumName, len(covered), len(members)),
+							"default":       "none",
+						}, &result)
+						emitted = true
+					}
 				}
-				covered := coveredEnumMembers(body, members)
-				if len(covered) == len(members) || hasDefault(body) {
-					continue
+			}
+
+			// Broader unhandled-value defect: a switch whose default is absent or a
+			// no-op, where the unhandled value has downstream state impact (a
+			// written state variable read after the switch, or a loop whose
+			// continuation depends on a value the switch updates). Heuristic —
+			// kept at the suspected tier for the AI to judge reachability.
+			if !emitted {
+				if reason, stateVars, ok := unhandledStateReason(sw, body, root, fn, scopes, cond, isEnum); ok {
+					extra := map[string]string{
+						"reason":     reason,
+						"state_vars": strings.Join(stateVars, ","),
+						"default":    defaultKind(body),
+					}
+					if ctrl := switchCtrlIdentifier(cond); ctrl != "" {
+						extra["variable"] = ctrl
+					}
+					d.emit(ctx, fn.ID, file, cond, "missing_default", extra, &result)
 				}
-				cond := switchCondition(sw)
-				d.emit(ctx, fn.ID, file, cond, "missing_default", map[string]string{
-					"enum_coverage": fmt.Sprintf("%s (covered %d/%d)", enumName, len(covered), len(members)),
-				}, &result)
 			}
 		}
 	})
@@ -337,4 +363,284 @@ func hasDefault(body *parser.Node) bool {
 		}
 	}
 	return false
+}
+
+// switchCtrlIdentifier returns the switch control expression as a bare
+// identifier, or "" when it is not a simple variable (a field read, call, ...).
+func switchCtrlIdentifier(cond parser.Node) string {
+	c := stripCastParenNode(cond)
+	if c.Kind() == "identifier" {
+		return c.Text()
+	}
+	return ""
+}
+
+// defaultKind classifies how the switch handles a value that matches no case:
+// "none" (no default), "empty" (a default whose body does nothing observable),
+// or "effective" (a default that returns/assigns/calls/etc.). An empty default
+// leaves downstream state untouched, exactly like having no default.
+func defaultKind(body *parser.Node) string {
+	if body == nil {
+		return "none"
+	}
+	for _, cs := range body.FindAll("case_statement") {
+		if !isDefaultCase(cs) {
+			continue
+		}
+		for _, s := range caseBody(cs) {
+			if !isNoOpStmt(s) {
+				return "effective"
+			}
+		}
+		return "empty"
+	}
+	return "none"
+}
+
+// isNoOpStmt reports whether a default-body statement has no observable effect
+// on program state or control flow (a comment, an empty `;`, or a bare
+// break/continue that merely exits the switch without updating state).
+func isNoOpStmt(s parser.Node) bool {
+	switch s.Kind() {
+	case "comment":
+		return true
+	case "break_statement", "continue_statement":
+		return true
+	case "expression_statement":
+		return len(s.NamedChildren()) == 0
+	case "compound_statement":
+		for _, c := range s.NamedChildren() {
+			if !isNoOpStmt(c) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// switchWrites returns the set of simple variable names written anywhere in the
+// switch's case bodies (assignments, ++/--, compound assignments).
+func switchWrites(body *parser.Node) map[string]bool {
+	writes := map[string]bool{}
+	if body == nil {
+		return writes
+	}
+	for _, cs := range body.FindAll("case_statement") {
+		for _, stmt := range caseBody(cs) {
+			collectWritesIn(stmt, writes)
+		}
+	}
+	return writes
+}
+
+func collectWritesIn(node parser.Node, writes map[string]bool) {
+	switch node.Kind() {
+	case "assignment_expression", "init_declarator":
+		if lhs, _, ok := node.AssignParts(); ok {
+			if v := assignedVariable(lhs); isSimpleIdentifier(v) {
+				writes[v] = true
+			}
+		}
+	case "update_expression":
+		for _, c := range node.NamedChildren() {
+			if c.Kind() == "identifier" {
+				writes[c.Text()] = true
+				break
+			}
+		}
+	}
+	for _, c := range node.NamedChildren() {
+		collectWritesIn(c, writes)
+	}
+}
+
+// isSimpleIdentifier reports whether name is a plain C identifier (no field /
+// subscript / pointer syntax), i.e. a whole-variable state slot.
+func isSimpleIdentifier(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// readsAfterSwitch returns the set of identifier names referenced after the
+// switch within the same function — the values a missing default would leave
+// stale or uninitialized.
+func readsAfterSwitch(root parser.Node, fn *db.Function, sw parser.Node) map[string]bool {
+	reads := map[string]bool{}
+	for _, id := range root.FindAll("identifier") {
+		if id.StartLine() > sw.EndLine() && id.StartLine() <= fn.EndLine {
+			reads[id.Text()] = true
+		}
+	}
+	return reads
+}
+
+func enclosingLoop(sw parser.Node) (parser.Node, bool) {
+	for p := sw.Parent(); p != nil; p = p.Parent() {
+		switch p.Kind() {
+		case "while_statement", "for_statement", "do_statement":
+			return *p, true
+		case "function_definition", "translation_unit":
+			return parser.Node{}, false
+		}
+	}
+	return parser.Node{}, false
+}
+
+// loopConditionVars returns the identifiers a loop's continuation condition
+// reads — the variables whose non-progress would stall the loop.
+func loopConditionVars(loop parser.Node) map[string]bool {
+	vars := map[string]bool{}
+	cond := loop.ChildByFieldName("condition")
+	if cond == nil {
+		return vars
+	}
+	for _, id := range cond.FindAll("identifier") {
+		vars[id.Text()] = true
+	}
+	return vars
+}
+
+// statefulExact / statefulAffixes name the dispatch/status vocabulary that marks
+// a switch control variable as a state-machine / message-type / error-code
+// selector rather than a local arithmetic counter. Name-based, so it is a
+// candidacy heuristic only — the result stays at the suspected tier and the AI
+// judges the actual value domain.
+var statefulExact = map[string]bool{
+	"state": true, "status": true, "mode": true, "type": true, "kind": true,
+	"op": true, "opcode": true, "code": true, "cmd": true, "command": true,
+	"msg": true, "message": true, "err": true, "errno": true, "error": true,
+	"ret": true, "rc": true, "result": true, "phase": true, "step": true,
+	"stage": true, "event": true, "action": true, "signal": true, "reason": true,
+	"cause": true, "flag": true, "flags": true, "level": true, "priority": true,
+	"class": true, "protocol": true, "proto": true, "request": true,
+	"response": true, "direction": true, "dir": true, "role": true,
+	"family": true,
+}
+
+var statefulAffixes = []string{
+	"state", "status", "mode", "type", "kind", "code", "cmd", "op", "opcode",
+	"msg", "message", "err", "error", "ret", "rc", "result", "phase", "step",
+	"stage", "event", "action", "signal", "reason", "cause", "flag", "level",
+	"priority", "class", "protocol", "proto", "request", "response", "direction",
+	"dir", "role", "family", "packet", "frame", "pkt",
+}
+
+func isStatefulVar(name string) bool {
+	if name == "" {
+		return false
+	}
+	if statefulExact[name] {
+		return true
+	}
+	lower := strings.ToLower(name)
+	for _, a := range statefulAffixes {
+		if strings.HasSuffix(lower, "_"+a) || strings.HasPrefix(lower, a+"_") {
+			return true
+		}
+	}
+	return false
+}
+
+func isParamName(name string, scopes map[int]integerOverflowTypeScope, fn *db.Function) bool {
+	if name == "" || fn == nil {
+		return false
+	}
+	return scopes[fn.StartLine].params[name]
+}
+
+// unhandledStateReason decides whether a switch that does not effectively handle
+// unknown values nonetheless has downstream state impact worth flagging. It
+// returns the reason ("loop_progress" or "unhandled_state") and the sorted state
+// variables involved.
+func unhandledStateReason(sw parser.Node, body *parser.Node, root parser.Node, fn *db.Function, scopes map[int]integerOverflowTypeScope, cond parser.Node, isEnum bool) (string, []string, bool) {
+	if defaultKind(body) == "effective" {
+		return "", nil, false
+	}
+	writes := switchWrites(body)
+	if len(writes) == 0 {
+		return "", nil, false
+	}
+	ctrl := switchCtrlIdentifier(cond)
+
+	// Loop progress: the switch updates a variable the enclosing loop's
+	// continuation condition reads — a missing case leaves it stale and the loop
+	// can fail to terminate (CWE-478 root cause of a possible CWE-835 stall).
+	if loop, inLoop := enclosingLoop(sw); inLoop {
+		condVars := loopConditionVars(loop)
+		var touched []string
+		for v := range writes {
+			if condVars[v] {
+				touched = append(touched, v)
+			}
+		}
+		if len(touched) > 0 {
+			return "loop_progress", sortStrings(touched), true
+		}
+	}
+
+	// Dispatch on a state / status / type / error selector (or an external
+	// parameter / enum selector) whose unhandled value leaves a written state
+	// variable stale downstream.
+	if ctrl == "" || !(isStatefulVar(ctrl) || isEnum || isParamName(ctrl, scopes, fn)) {
+		return "", nil, false
+	}
+	stateVars := intersectStrings(writes, readsAfterSwitch(root, fn, sw))
+	if len(stateVars) == 0 {
+		return "", nil, false
+	}
+	return "unhandled_state", sortStrings(stateVars), true
+}
+
+// sentinelEnumerator reports whether an enumerator name is a boundary/count
+// marker (the conventional *_MAX / *_COUNT / *_NUM / *_SIZE / *_END / *_LAST
+// enumerators) rather than a dispatchable value, so it is excluded from the
+// "must be covered" set.
+func sentinelEnumerator(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, s := range []string{"_MAX", "_COUNT", "_NUM", "_SIZE", "_END", "_LAST"} {
+		if strings.HasSuffix(upper, s) {
+			return true
+		}
+	}
+	switch upper {
+	case "MAX", "COUNT", "NUM", "SIZE", "END", "LAST":
+		return true
+	}
+	return false
+}
+
+func nonSentinelEnumerators(members map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(members))
+	for m := range members {
+		if !sentinelEnumerator(m) {
+			out[m] = true
+		}
+	}
+	return out
+}
+
+func sortStrings(s []string) []string {
+	sort.Strings(s)
+	return s
+}
+
+func intersectStrings(a, b map[string]bool) []string {
+	var out []string
+	for k := range a {
+		if b[k] {
+			out = append(out, k)
+		}
+	}
+	return out
 }

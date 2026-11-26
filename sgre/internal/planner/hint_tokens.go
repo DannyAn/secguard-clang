@@ -230,6 +230,9 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "comment@none", Description: "no exemption comment (`fall through` / `fallthrough`) sits between this case and the next — the pipeline already suppressed the documented-intent cases"},
 	{Key: "case_end@", Display: "case_end@<kind>", Description: "the switch case's last statement kind: {value} — it does not break/return/goto, so the fallthrough is structural"},
 	{Key: "enum@", Display: "enum@<name>(covered N/M)", Description: "the switch condition's enum type and coverage: {value} — not every enumerator is covered and there is no default; judge whether the uncovered members are unreachable (dismiss) or a real missing handler (confirm)"},
+	{Key: "unhandled@", Display: "unhandled@<enum_gap|loop_progress|unhandled_state>", Description: "the CWE-478 missing_default sub-shape: {value} — enum_gap = an enum enumerator is uncovered with no default; loop_progress = a value the switch updates is read by the enclosing loop's continuation, so a missing case can stall the loop; unhandled_state = a state/status/type/error selector writes a variable consumed downstream with no effective default"},
+	{Key: "state@", Display: "state@<v1,v2,...>", Description: "the state variables the switch writes that are consumed after the switch: {value} — an unhandled value leaves them stale or unset"},
+	{Key: "default@", Display: "default@<none|empty>", Description: "the switch's default handling: {value} — `none` = no default; `empty` = a default whose body is a no-op (comment / `;` / bare break/continue), which does not handle the unknown value either"},
 
 	// ---- implicit-contract / sizeof-misuse ----
 	{Key: "subject@", Display: "subject@<name>", Description: "the entity the contract/judgment is about: {value} (the struct-pointer parameter for implicit-contract, the sizeof operand for sizeof-misuse)"},
