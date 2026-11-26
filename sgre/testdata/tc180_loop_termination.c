@@ -1,6 +1,6 @@
 /* Loop termination & progress analysis fixtures (CWE-835).
  * Positive cases (lt01..lt06) must emit a LOOP_TERMINATION event.
- * Negative cases (lt20..lt28) must not. */
+ * Negative cases (lt20..lt29) must not. */
 
 int parse(int off) { return off; }
 int next(void) { return 0; }
@@ -31,7 +31,7 @@ int lt02_no_progress_for(int n) {
 int lt03_zero_step(int n) {
     int i = 0;
     while (i < n) {
-        i = i;
+        i += 0;
     }
     return i;
 }
