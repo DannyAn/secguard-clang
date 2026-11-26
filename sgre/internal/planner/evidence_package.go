@@ -707,6 +707,29 @@ func buildHintParts(c Candidate, spec *VulnTypeSpec) []string {
 				parts = append(parts, "alloc_size@"+c.VariableName)
 			}
 			parts = append(parts, "guard@none-upper")
+		case "loop-termination":
+			// The verdict basis: the loop construct, the exit condition, and the
+			// progress variable that must advance, plus the specific no-progress
+			// mechanism. The classifier judges whether the variable can change
+			// through a channel the pipeline could not model (alias / external
+			// state), never confirm from the tokens alone.
+			if c.LoopKind != "" {
+				parts = append(parts, "loop-kind@"+c.LoopKind)
+			}
+			if c.LoopCondition != "" {
+				parts = append(parts, "exit-cond@"+c.LoopCondition)
+			}
+			if c.VariableName != "" {
+				parts = append(parts, "progress@"+c.VariableName)
+			}
+			switch c.Category {
+			case "no_progress":
+				parts = append(parts, "no-write")
+			case "zero_step":
+				parts = append(parts, fmt.Sprintf("zero-step@%d", c.ProgressLine))
+			case "continue_bypass":
+				parts = append(parts, fmt.Sprintf("cont-bypass@%d", c.ProgressLine))
+			}
 		case "implicit-contract":
 			if c.Subject != "" {
 				parts = append(parts, "subject@"+c.Subject)

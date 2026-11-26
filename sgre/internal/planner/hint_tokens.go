@@ -238,6 +238,14 @@ var hintTokenRegistry = []HintTokenSpec{
 	{Key: "sibling-guard@", Display: "sibling-guard@<fn>:<line>", Description: "implicit-contract: a SAME-FILE sibling function `fn` null-checks the same field at {value} — the same-TU comparison that makes the missing guard an omission rather than the project's convention; judge whether the missing guard can actually see NULL"},
 	{Key: "evidence-kind@", Display: "evidence-kind@self|sibling|sibling-weak", Description: "where the field's nullable treatment is proven: {value} — `sibling` = a function in the SAME FILE with the same parameter struct type null-checks it (the kept, strong tier); `self` = only this function checks it and its guard does not dominate the deref (pre-dismissed: no sibling reference); `sibling-weak` = a type-anchored guard in ANOTHER file only (pre-dismissed: unrelated-TU evidence)"},
 	{Key: "shape-cluster@", Display: "shape-cluster@<N>", Description: "shape-level clustering folded {value} other same-file site(s) of the same defect shape into this candidate — for implicit-contract the shape is the field, access form, evidence tier and guard structure; for buffer-overflow/out-of-bounds it is the index-source field, array capacity and access flavor. One verdict covers the whole family; the folded `function:line` sites are listed under `## Clustered Sites` in this evidence file"},
+
+	// ---- loop-termination ----
+	{Key: "loop-kind@", Display: "loop-kind@<while|for|do>", Description: "the loop construct whose termination is at issue: {value}"},
+	{Key: "exit-cond@", Display: "exit-cond@<expr>", Description: "the loop's exit condition: {value} — the predicate that must eventually become false"},
+	{Key: "progress@", Display: "progress@<var>", Description: "the exit-condition variable that must advance: {value}"},
+	{Key: "no-write", Description: "the progress variable is never assigned or updated in the loop body/update clause, and there is no break/return/goto alternative exit — if the loop is entered the condition can never change"},
+	{Key: "zero-step@", Display: "zero-step@N", Description: "the only write(s) to the progress variable are provable no-ops (first at line {value}) — the value cannot change"},
+	{Key: "cont-bypass@", Display: "cont-bypass@N", Description: "a `continue` at line {value} precedes every progress write, so that back-edge skips the update"},
 }
 
 // matchHintToken resolves one emitted token against the registry: an exact

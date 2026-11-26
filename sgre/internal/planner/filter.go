@@ -564,6 +564,13 @@ type Candidate struct {
 	ShiftBase  string `json:"shift_base,omitempty"`
 	// Mode is the chmod/fchmod permission_setting mode argument (e.g. "0666").
 	Mode string `json:"mode,omitempty"`
+	// LoopKind/LoopCondition/ProgressLine carry the loop-termination evidence:
+	// the loop construct ("while"/"for"/"do"), its exit condition text, and the
+	// line of the no-op update (zero_step) or the bypassing continue
+	// (continue_bypass).
+	LoopKind      string `json:"loop_kind,omitempty"`
+	LoopCondition string `json:"loop_condition,omitempty"`
+	ProgressLine  int    `json:"progress_line,omitempty"`
 }
 
 // CallSiteInfo is one in-tree call site of a parameter, as the callsite census

@@ -341,6 +341,13 @@ type eventProps struct {
 	ShiftBase  string `json:"shift_base"`
 	// Mode is the chmod/fchmod permission_setting mode argument (e.g. "0666").
 	Mode string `json:"mode"`
+	// LoopKind/LoopCondition/ProgressLine carry the loop-termination evidence:
+	// the loop construct ("while"/"for"/"do"), its exit condition text, and the
+	// line of the no-op update (zero_step) or the bypassing continue
+	// (continue_bypass).
+	LoopKind      string  `json:"loop_kind"`
+	LoopCondition string  `json:"loop_condition"`
+	ProgressLine  flexInt `json:"progress_line"`
 }
 
 func parseEventProps(raw string) eventProps {

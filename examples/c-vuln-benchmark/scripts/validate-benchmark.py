@@ -147,6 +147,7 @@ CWE_TO_TYPE = {
     "CWE-758": "integer-overflow",
     "CWE-732": "path-traversal",
     "CWE-1284": "unbounded-length-copy",
+    "CWE-835": "loop-termination",
 }
 
 
